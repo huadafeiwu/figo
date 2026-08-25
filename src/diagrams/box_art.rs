@@ -9,6 +9,7 @@ use crate::canvas::Canvas;
 use crate::error::{FigoError, Result};
 use crate::style::{Alignment, BorderStyle, Charset, HAlign, Padding, VAlign};
 use crate::text::{align_horizontal, word_wrap};
+use unicode_width::UnicodeWidthChar;
 
 /// Draw a bordered box with optional title and content.
 ///
@@ -124,7 +125,19 @@ impl<'a> BoxArt<'a> {
         if let Some(title) = self.title {
             if !title.is_empty() && self.width > 2 {
                 let max_title = self.width.saturating_sub(4);
-                let display: String = title.chars().take(max_title).collect();
+                let display: String = {
+                    let mut s = String::new();
+                    let mut w = 0usize;
+                    for ch in title.chars() {
+                        let cw = UnicodeWidthChar::width(ch).unwrap_or(1);
+                        if w + cw > max_title {
+                            break;
+                        }
+                        w += cw;
+                        s.push(ch);
+                    }
+                    s
+                };
                 // Place title left-aligned after the top-left corner
                 let start = 2;
                 canvas.put_str(start, 0, &format!(" {display} "));

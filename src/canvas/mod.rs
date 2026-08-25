@@ -23,6 +23,7 @@ pub use cell::{Cell, Layer};
 
 use crate::error::Result;
 use crate::style::{Charset, Color, LineStyle};
+use unicode_width::UnicodeWidthChar;
 
 /// A 2-D grid buffer for building text diagrams.
 #[derive(Debug)]
@@ -106,8 +107,10 @@ impl Canvas {
         layer: Layer,
         fg: Option<Color>,
     ) {
-        for (i, ch) in s.chars().enumerate() {
-            self.put_layered(x + i, y, ch, layer, fg);
+        let mut col = x;
+        for ch in s.chars() {
+            self.put_layered(col, y, ch, layer, fg);
+            col += UnicodeWidthChar::width(ch).unwrap_or(1);
         }
     }
 
