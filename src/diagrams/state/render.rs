@@ -170,7 +170,7 @@ struct LabelInfo {
     x: usize,
     width: usize,
     row: usize,
-    gap_key: (usize, usize),
+    gap_key: (usize, usize, usize, usize),
 }
 
 fn compute_label_rows(
@@ -193,12 +193,12 @@ fn compute_label_rows(
         let to_cx = to.rect.x + to.rect.w / 2;
         let label_x = (from_cx + to_cx) / 2;
         let label_x = label_x.saturating_sub(text.width() / 2);
-        // Group labels by the vertical gap they occupy so that labels in
-        // different gaps don't push each other to higher rows.
+        // Group labels by their gap (identified by both y and x of endpoints)
+        // so labels in different gaps don't push each other to higher rows.
         let gap_key = if from.rect.y < to.rect.y {
-            (from.rect.y, to.rect.y)
+            (from.rect.y, to.rect.y, from_cx, to_cx)
         } else {
-            (to.rect.y, from.rect.y)
+            (to.rect.y, from.rect.y, to_cx, from_cx)
         };
         labels.push(LabelInfo {
             transition_index: idx,
@@ -214,7 +214,7 @@ fn compute_label_rows(
     }
 
     // Group labels by gap_key, then assign rows within each group.
-    let mut gap_groups: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+    let mut gap_groups: HashMap<(usize, usize, usize, usize), Vec<usize>> = HashMap::new();
     for (i, label) in labels.iter().enumerate() {
         gap_groups.entry(label.gap_key).or_default().push(i);
     }
@@ -230,7 +230,7 @@ fn compute_label_rows(
             for (row_idx, row) in rows.iter_mut().enumerate() {
                 let overlaps = row.iter().any(|&other_idx| {
                     let other = &labels[other_idx];
-                    label.x < other.x + other.width + 1 && label.x + label.width + 1 > other.x
+                    label.x < other.x + other.width && label.x + label.width > other.x
                 });
                 if !overlaps {
                     labels[orig_idx].row = row_idx;
@@ -257,16 +257,16 @@ fn shift_layouts(layouts: &mut [StateLayout], dy: usize) {
 }
 
 /// Compute how many extra rows each vertical gap needs to fit its labels.
-/// Returns a map from (from_y, to_y) gap key to extra rows needed.
+/// Returns a map from gap key to extra rows needed.
 fn compute_gap_expansion(
     transitions: &[Transition],
     layouts: &[StateLayout],
     label_rows: &HashMap<usize, usize>,
-) -> HashMap<(usize, usize), usize> {
+) -> HashMap<(usize, usize, usize, usize), usize> {
     let id_to_layout: HashMap<&str, &StateLayout> =
         layouts.iter().map(|l| (l.id.as_str(), l)).collect();
 
-    let mut gap_max_row: HashMap<(usize, usize), usize> = HashMap::new();
+    let mut gap_max_row: HashMap<(usize, usize, usize, usize), usize> = HashMap::new();
 
     for (idx, t) in transitions.iter().enumerate() {
         if t.from == t.to {
@@ -275,10 +275,12 @@ fn compute_gap_expansion(
         let Some(from) = id_to_layout.get(t.from.as_str()) else { continue };
         let Some(to) = id_to_layout.get(t.to.as_str()) else { continue };
         let row = label_rows.get(&idx).copied().unwrap_or(0);
+        let from_cx = from.rect.x + from.rect.w / 2;
+        let to_cx = to.rect.x + to.rect.w / 2;
         let gap_key = if from.rect.y < to.rect.y {
-            (from.rect.y, to.rect.y)
+            (from.rect.y, to.rect.y, from_cx, to_cx)
         } else {
-            (to.rect.y, from.rect.y)
+            (to.rect.y, from.rect.y, to_cx, from_cx)
         };
         gap_max_row.entry(gap_key).and_modify(|r| *r = (*r).max(row)).or_insert(row);
     }
@@ -297,7 +299,7 @@ fn compute_gap_expansion(
 /// gap are shifted down by the accumulated extra.
 fn apply_gap_expansion(
     layouts: &mut [StateLayout],
-    gap_extra: &HashMap<(usize, usize), usize>,
+    gap_extra: &HashMap<(usize, usize, usize, usize), usize>,
     _params: &LayoutParams,
 ) {
     if gap_extra.is_empty() {
@@ -311,7 +313,7 @@ fn apply_gap_expansion(
     for layout in layouts.iter_mut() {
         let orig_y = layout.rect.y;
         // Check if there's a gap ending at this state's original y.
-        for ((_fy, ty), extra) in gap_extra {
+        for ((_fy, ty, _fx, _tx), extra) in gap_extra {
             if *ty == orig_y {
                 cumul += extra;
                 break;
