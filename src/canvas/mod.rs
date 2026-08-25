@@ -321,7 +321,7 @@ impl Canvas {
 
     fn is_connector_line(&self, x: usize, y: usize) -> bool {
         let Some(cell) = self.cell(x, y) else { return false };
-        cell.layer == Layer::Connector && cell.ch != ' '
+        (cell.layer == Layer::Connector || cell.layer == Layer::Label) && cell.ch != ' '
     }
 
     fn connector_directions(&self, x: usize, y: usize) -> Directions {
