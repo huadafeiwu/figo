@@ -5,13 +5,13 @@ expression: out
                                       +------------+
                                 *────>|    Idle    |
                                       +------------+
-                                            start
+                                           start
                                              |
                                              |
                                       +------v-----+
                                       |  Running   |
                                       +------------+
-                                            finish
+                                          finish
                                              |
                                              |
                                       +------v-----+
