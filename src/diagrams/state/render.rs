@@ -285,7 +285,7 @@ fn compute_gap_expansion(
 fn apply_gap_expansion(
     layouts: &mut [StateLayout],
     gap_extra: &HashMap<(usize, usize), usize>,
-    params: &LayoutParams,
+    _params: &LayoutParams,
 ) {
     if gap_extra.is_empty() {
         return;
@@ -299,7 +299,7 @@ fn apply_gap_expansion(
     let mut cumul = 0usize;
     for layout in layouts.iter_mut() {
         // Check if there's a gap ending at this state's original y.
-        for ((fy, ty), extra) in gap_extra {
+        for ((_fy, ty), extra) in gap_extra {
             if *ty == layout.rect.y {
                 cumul += extra;
                 break;
