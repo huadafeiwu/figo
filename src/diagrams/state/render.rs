@@ -583,11 +583,8 @@ fn draw_external_transition(
         // row 0: label on corridor (center of from_cx/to_cx).
         // row>0: label on the vertical leg that exists above route_y:
         //   forward → from-leg (from_cx), reverse → to-leg (to_cx).
-        let base_x = if row > 0 {
-            if forward { from_cx } else { to_cx }
-        } else {
-            (from_cx + to_cx) / 2
-        };
+        let base_x =
+            if row > 0 { if forward { from_cx } else { to_cx } } else { (from_cx + to_cx) / 2 };
         let mut label_x = base_x.saturating_sub(lw / 2);
         label_x = label_x.min(surface.width().saturating_sub(lw));
         // Corridor clamping only when label is on the corridor (row 0).
