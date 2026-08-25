@@ -285,6 +285,11 @@ fn expand_corridors_for_labels(
         let lw = text.width();
         let from_cx = layouts[from_idx].rect.x + layouts[from_idx].rect.w / 2;
         let to_cx = layouts[to_idx].rect.x + layouts[to_idx].rect.w / 2;
+        // Skip same-column transitions (no horizontal corridor; label
+        // overflows into empty gap space which is safe).
+        if from_cx == to_cx {
+            continue;
+        }
         let corridor_w = from_cx.abs_diff(to_cx) + 1;
         let needed = lw + 2; // label + 1 cell --- on each side
         if needed > corridor_w {
