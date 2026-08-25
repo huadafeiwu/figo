@@ -175,12 +175,7 @@ fn compute_label_rows(
         let to_cx = to.rect.x + to.rect.w / 2;
         let label_x = (from_cx + to_cx) / 2;
         let label_x = label_x.saturating_sub(text.width() / 2);
-        labels.push(LabelInfo {
-            transition_index: idx,
-            x: label_x,
-            width: text.width(),
-            row: 0,
-        });
+        labels.push(LabelInfo { transition_index: idx, x: label_x, width: text.width(), row: 0 });
     }
 
     if labels.is_empty() {
@@ -309,8 +304,7 @@ fn draw_accepting_state(
             surface.put_horizontal(ix + 1, iy + ry, iw.saturating_sub(2), ' ', Layer::NodeContent);
         }
         // Re-draw the label at the center.
-        let lx = layout.rect.x
-            + (layout.rect.w.saturating_sub(layout.label.width())) / 2;
+        let lx = layout.rect.x + (layout.rect.w.saturating_sub(layout.label.width())) / 2;
         let ly = layout.rect.y + layout.rect.h / 2;
         surface.put_str_layered(lx, ly, &layout.label, Layer::NodeContent);
     }

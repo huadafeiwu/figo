@@ -187,8 +187,7 @@ impl Connector {
                 // Place the label just below the horizontal segment, biased
                 // toward the target side so it reads as belonging to the
                 // arrow that points at the target.
-                let label_x = ((fx + tx) / 2)
-                    .saturating_sub(label.width() / 2);
+                let label_x = ((fx + tx) / 2).saturating_sub(label.width() / 2);
                 let label_y = mid_y + 1;
                 surface.put_str_layered(label_x, label_y, label, Layer::Label);
             }

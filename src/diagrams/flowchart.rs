@@ -373,8 +373,7 @@ impl Flowchart {
         }
         // Centered label. For diamonds the label sits on the middle row;
         // for rectangles on the single content row.
-        let lx = pos.rect.x
-            + (pos.rect.w.saturating_sub(pos.node.label.width())) / 2;
+        let lx = pos.rect.x + (pos.rect.w.saturating_sub(pos.node.label.width())) / 2;
         let ly = pos.rect.y + pos.rect.h / 2;
         canvas.put_str_layered(lx, ly, &pos.node.label, Layer::NodeContent, None);
     }
