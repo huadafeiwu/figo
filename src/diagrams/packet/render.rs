@@ -8,6 +8,8 @@ use std::collections::HashSet;
 
 use crate::canvas::{Canvas, Layer};
 use crate::style::BorderGlyphs;
+use crate::text::split_at_display_width;
+use unicode_width::UnicodeWidthStr;
 
 use super::Layout;
 
@@ -72,7 +74,7 @@ pub(super) fn draw_scale(canvas: &mut Canvas, layout: Layout) {
     for bit in [0usize, 4, 8, 12, 16, 20, 24, 28, 31] {
         let x = layout.packet_left + bit * layout.col_per_bit;
         let label = bit.to_string();
-        let label_x = x.saturating_sub(label.chars().count().saturating_sub(1));
+        let label_x = x.saturating_sub(UnicodeWidthStr::width(label.as_str()).saturating_sub(1));
         canvas.put_str_layered(label_x, 0, &label, Layer::Grid, None);
     }
 }
@@ -148,11 +150,12 @@ pub(super) fn write_centered_label(
     if inner_w == 0 {
         return;
     }
-    let total = name.chars().count();
+    let total = UnicodeWidthStr::width(name);
     let (label, chars) = if total <= inner_w {
         (name.to_string(), total)
     } else {
-        (name.chars().take(inner_w).collect(), inner_w)
+        let (truncated, _) = split_at_display_width(name, inner_w);
+        (truncated, inner_w)
     };
     let pad = (inner_w - chars) / 2;
     canvas.put_str_layered(inner_left + pad, y, &label, Layer::NodeContent, None);

@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::diagrams::state::types::{StateNode, StateType, Transition};
 use crate::render::widget::{Rect, Size};
+use unicode_width::UnicodeWidthStr;
 
 /// Layout information for a single state.
 #[derive(Debug, Clone)]
@@ -47,7 +48,7 @@ impl Default for LayoutParams {
 
 /// State size in cells (width, height). Width depends on label length.
 fn state_size(label: &str, st: StateType, min_w: usize, base_h: usize, extra_h: usize) -> Size {
-    let w = (label.chars().count() + 4).max(min_w);
+    let w = (UnicodeWidthStr::width(label) + 4).max(min_w);
     let h = match st {
         StateType::Simple => base_h,
         StateType::Accepting => base_h + extra_h,

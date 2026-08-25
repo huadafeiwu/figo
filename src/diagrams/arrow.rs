@@ -8,6 +8,7 @@ use std::fmt;
 use crate::canvas::Canvas;
 use crate::error::Result;
 use crate::style::{Charset, LineStyle};
+use unicode_width::UnicodeWidthStr;
 
 /// Draw a standalone arrow.
 ///
@@ -98,10 +99,10 @@ impl Arrow {
         let (_, left_head) = self.left_arrow_chars();
 
         let label = self.label.as_deref().unwrap_or("");
-        let label_width = label.len();
+        let label_width = UnicodeWidthStr::width(label);
         let height = if label.is_empty() { 1usize } else { 3usize };
-        let left_head_width = left_head.chars().count();
-        let right_head_width = right_head.chars().count();
+        let left_head_width = UnicodeWidthStr::width(left_head);
+        let right_head_width = UnicodeWidthStr::width(right_head);
         let total_width = if self.direction == "bidirectional" {
             self.length + left_head_width + right_head_width
         } else {
@@ -122,13 +123,13 @@ impl Arrow {
                 canvas.put_str(0, arrow_y, left_head);
                 let body: String = line.repeat(self.length);
                 // Use char count, not byte length, for the offset
-                let head_width = left_head.chars().count();
+                let head_width = UnicodeWidthStr::width(left_head);
                 canvas.put_str(head_width, arrow_y, &body);
             }
             "bidirectional" => {
                 canvas.put_str(0, arrow_y, left_head);
                 let body: String = line.repeat(self.length);
-                let head_width = left_head.chars().count();
+                let head_width = UnicodeWidthStr::width(left_head);
                 canvas.put_str(head_width, arrow_y, &body);
                 canvas.put_str(head_width + self.length, arrow_y, right_head);
             }
@@ -165,7 +166,7 @@ impl Arrow {
         };
 
         let label = self.label.as_deref().unwrap_or("");
-        let label_len = label.chars().count();
+        let label_len = UnicodeWidthStr::width(label);
         // Center the arrow horizontally
         let width = label_len.max(1);
         let height = self.length + 1;

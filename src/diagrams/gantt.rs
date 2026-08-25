@@ -130,7 +130,11 @@ impl GanttChart {
             let x = chart_start + u * col_per_unit;
             if u % label_step == 0 || u + 1 == self.total_units {
                 let label = format!("{u}");
-                canvas.put_str(x, 1, &label);
+                // Don't let scale labels overwrite the right border column.
+                let max_x = display_w.saturating_sub(2);
+                if x <= max_x {
+                    canvas.put_str(x.min(max_x), 1, &label);
+                }
             } else {
                 canvas.put_layered(x, 1, glyphs.tee_down, Layer::Grid, None);
             }

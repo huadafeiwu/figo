@@ -206,7 +206,19 @@ impl Node {
     fn draw_inline_border_title(&self, canvas: &mut Canvas, title: &str) {
         let top_y = self.rect.y;
         let max_title_w = self.rect.w.saturating_sub(4);
-        let display: String = title.chars().take(max_title_w).collect();
+        let display: String = {
+            let mut s = String::new();
+            let mut w = 0usize;
+            for ch in title.chars() {
+                let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
+                if w + cw > max_title_w {
+                    break;
+                }
+                w += cw;
+                s.push(ch);
+            }
+            s
+        };
         let display_w = UnicodeWidthStr::width(display.as_str());
         match self.title_align {
             HAlign::Left => {

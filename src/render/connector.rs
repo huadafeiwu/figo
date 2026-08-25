@@ -4,6 +4,7 @@ use crate::canvas::Layer;
 use crate::render::surface::Surface;
 use crate::render::widget::{PaintContext, Rect};
 use crate::style::{Charset, LineStyle};
+use unicode_width::UnicodeWidthStr;
 
 /// Marker placed at the target end of a connector.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -186,7 +187,7 @@ impl Connector {
                 // Place the label just below the horizontal segment, biased
                 // toward the target side so it reads as belonging to the
                 // arrow that points at the target.
-                let label_x = ((fx + tx) / 2).saturating_sub(label.len() / 2);
+                let label_x = ((fx + tx) / 2).saturating_sub(UnicodeWidthStr::width(label.as_str()) / 2);
                 let label_y = mid_y + 1;
                 surface.put_str_layered(label_x, label_y, label, Layer::Label);
             }

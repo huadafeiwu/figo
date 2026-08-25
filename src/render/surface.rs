@@ -2,6 +2,7 @@
 
 use crate::canvas::{Canvas, Layer};
 use crate::style::{BorderGlyphs, BorderStyle, Charset};
+use unicode_width::UnicodeWidthChar;
 
 /// A rectangular drawing region with an optional clip rectangle.
 ///
@@ -75,11 +76,13 @@ impl<'a> Surface<'a> {
         if y >= self.clip_h {
             return;
         }
-        for (i, ch) in s.chars().enumerate() {
-            if x + i >= self.clip_w {
+        let mut col = x;
+        for ch in s.chars() {
+            if col >= self.clip_w {
                 break;
             }
-            self.put(x + i, y, ch);
+            self.put(col, y, ch);
+            col += UnicodeWidthChar::width(ch).unwrap_or(1);
         }
     }
 
@@ -88,11 +91,13 @@ impl<'a> Surface<'a> {
         if y >= self.clip_h {
             return;
         }
-        for (i, ch) in s.chars().enumerate() {
-            if x + i >= self.clip_w {
+        let mut col = x;
+        for ch in s.chars() {
+            if col >= self.clip_w {
                 break;
             }
-            self.put_layered(x + i, y, ch, layer);
+            self.put_layered(col, y, ch, layer);
+            col += UnicodeWidthChar::width(ch).unwrap_or(1);
         }
     }
 

@@ -75,7 +75,7 @@ pub fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
 }
 
 /// Split `s` at `display_width` counting Unicode display width.
-fn split_at_display_width(s: &str, width: usize) -> (String, String) {
+pub fn split_at_display_width(s: &str, width: usize) -> (String, String) {
     let mut w = 0usize;
     let mut byte_idx = 0usize;
     for (i, ch) in s.char_indices() {
