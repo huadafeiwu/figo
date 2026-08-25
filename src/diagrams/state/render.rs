@@ -107,11 +107,8 @@ impl<'a> StateDiagram<'a> {
             // Mirror draw_external_transition's base_x logic exactly.
             let row = label_rows.get(&idx).copied().unwrap_or(0);
             let fwd = from.rect.y < to.rect.y;
-            let base_x = if row > 0 {
-                if fwd { from_cx } else { to_cx }
-            } else {
-                (from_cx + to_cx) / 2
-            };
+            let base_x =
+                if row > 0 { if fwd { from_cx } else { to_cx } } else { (from_cx + to_cx) / 2 };
             let lx = base_x.saturating_sub(lw / 2);
             total_w = total_w.max(lx + lw);
         }
