@@ -488,18 +488,12 @@ fn draw_external_transition(
     let arrow_y = if forward { to.y } else { to.y + to.h - 1 };
     surface.put_layered(to_cx, arrow_y, arrow_ch, Layer::ConnectorEnd);
 
-    // Label near the horizontal corridor.
+    // Label embedded in the corridor/vertical line (replaces a segment).
     if let Some(text) = label {
         let label_x = (from_cx + to_cx) / 2;
         let label_x = label_x.saturating_sub(text.width() / 2);
-        // Clamp label_x to stay within the canvas bounds.
         let label_x = label_x.min(surface.width().saturating_sub(text.width()));
-        let label_y = route_y.saturating_sub(1 + row * 2);
-        // Clamp label_y to stay within the gap between the two states,
-        // never overlapping either state box's label row.
-        let gap_top = from_anchor.min(to_anchor) + 1;
-        let gap_bottom = from_anchor.max(to_anchor).saturating_sub(1);
-        let label_y = label_y.clamp(gap_top, gap_bottom);
+        let label_y = route_y.saturating_sub(row * 2);
         surface.put_str_layered(label_x, label_y, text, Layer::Label);
     }
 }
