@@ -77,6 +77,10 @@ impl<'a> StateDiagram<'a> {
         let params = LayoutParams::default();
         let mut layouts =
             layout_states(&self.states, &self.transitions, self.initial, self.width, &params);
+
+        // Expand horizontal spacing so corridors are wide enough for labels.
+        expand_corridors_for_labels(&mut layouts, &self.transitions, &params);
+
         let label_rows = compute_label_rows(&self.transitions, &layouts);
 
         // Compute per-gap max row and expand gaps accordingly.
@@ -253,6 +257,57 @@ fn compute_label_rows(
 fn shift_layouts(layouts: &mut [StateLayout], dy: usize) {
     for layout in layouts.iter_mut() {
         layout.rect.y += dy;
+    }
+}
+
+/// Expand horizontal spacing so corridor between from and to states is wide
+/// enough to fit the transition label (with 1 cell of `---` on each side).
+/// Only pushes the `to` state and its same-layer rightward peers rightward.
+fn expand_corridors_for_labels(
+    layouts: &mut [StateLayout],
+    transitions: &[Transition],
+    _params: &LayoutParams,
+) {
+    let id_to_idx: HashMap<&str, usize> =
+        layouts.iter().enumerate().map(|(i, l)| (l.id.as_str(), i)).collect();
+
+    // Collect expansion amounts per (from_idx, to_idx) pair.
+    // We process transitions in order, accumulating shifts.
+    let mut shifts: HashMap<usize, usize> = HashMap::new(); // to_idx -> extra x
+
+    for t in transitions {
+        if t.from == t.to {
+            continue;
+        }
+        let Some(text) = t.label.as_ref() else { continue };
+        let Some(&from_idx) = id_to_idx.get(t.from.as_str()) else { continue };
+        let Some(&to_idx) = id_to_idx.get(t.to.as_str()) else { continue };
+        let lw = text.width();
+        let from_cx = layouts[from_idx].rect.x + layouts[from_idx].rect.w / 2;
+        let to_cx = layouts[to_idx].rect.x + layouts[to_idx].rect.w / 2;
+        let corridor_w = from_cx.abs_diff(to_cx) + 1;
+        let needed = lw + 2; // label + 1 cell --- on each side
+        if needed > corridor_w {
+            let extra = needed - corridor_w;
+            let existing = shifts.get(&to_idx).copied().unwrap_or(0);
+            shifts.insert(to_idx, existing.max(extra));
+        }
+    }
+
+    if shifts.is_empty() {
+        return;
+    }
+
+    // Apply shifts: for each state that needs to move right, also move all
+    // states at the same y and to its right by the same amount.
+    for (idx, extra) in &shifts {
+        let y = layouts[*idx].rect.y;
+        let x = layouts[*idx].rect.x;
+        for layout in layouts.iter_mut() {
+            if layout.rect.y == y && layout.rect.x >= x {
+                layout.rect.x += extra;
+            }
+        }
     }
 }
 
@@ -507,9 +562,15 @@ fn draw_external_transition(
     // row 0: label sits on route_y (the corridor/line itself).
     // row > 0: label sits above to avoid x overlap with another label.
     if let Some(text) = label {
+        let lw = text.width();
         let label_x = (from_cx + to_cx) / 2;
-        let label_x = label_x.saturating_sub(text.width() / 2);
-        let label_x = label_x.min(surface.width().saturating_sub(text.width()));
+        let mut label_x = label_x.saturating_sub(lw / 2);
+        // Clamp to canvas bounds.
+        label_x = label_x.min(surface.width().saturating_sub(lw));
+        // Clamp within corridor so both sides stay visible.
+        if right_x > left_x && lw < right_x - left_x + 1 {
+            label_x = label_x.max(left_x).min(right_x + 1 - lw);
+        }
         let label_y = if row == 0 { route_y } else { route_y.saturating_sub(row * 2) };
         surface.put_str_layered(label_x, label_y, text, Layer::Label);
 
