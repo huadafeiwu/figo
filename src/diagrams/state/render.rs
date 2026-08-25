@@ -502,11 +502,13 @@ fn draw_external_transition(
     surface.put_layered(to_cx, arrow_y, arrow_ch, Layer::ConnectorEnd);
 
     // Label embedded in the corridor/vertical line (replaces a segment).
+    // row 0: label sits on route_y (the corridor/line itself).
+    // row > 0: label sits above to avoid x overlap with another label.
     if let Some(text) = label {
         let label_x = (from_cx + to_cx) / 2;
         let label_x = label_x.saturating_sub(text.width() / 2);
         let label_x = label_x.min(surface.width().saturating_sub(text.width()));
-        let label_y = route_y.saturating_sub(row * 2);
+        let label_y = if row == 0 { route_y } else { route_y.saturating_sub(row * 2) };
         surface.put_str_layered(label_x, label_y, text, Layer::Label);
     }
 }
