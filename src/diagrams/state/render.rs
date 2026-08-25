@@ -90,7 +90,20 @@ impl<'a> StateDiagram<'a> {
         }
 
         let id_to_layout = build_id_map(&layouts);
-        let total_w = compute_canvas_width(&layouts, &params).max(self.width);
+        let mut total_w = compute_canvas_width(&layouts, &params).max(self.width);
+
+        // Ensure canvas is wide enough for all transition labels.
+        for t in &self.transitions {
+            let Some(text) = t.label.as_ref() else { continue };
+            let lw = text.width();
+            let Some(from) = id_to_layout.get(&t.from) else { continue };
+            let Some(to) = id_to_layout.get(&t.to) else { continue };
+            let from_cx = from.rect.x + from.rect.w / 2;
+            let to_cx = to.rect.x + to.rect.w / 2;
+            let lx = ((from_cx + to_cx) / 2).saturating_sub(lw / 2);
+            total_w = total_w.max(lx + lw);
+        }
+
         let total_h = compute_canvas_height(&layouts, &params, max_label_row);
 
         let mut canvas = Canvas::new(total_w, total_h);
@@ -217,7 +230,8 @@ fn compute_label_rows(
             for (row_idx, row) in rows.iter_mut().enumerate() {
                 let overlaps = row.iter().any(|&other_idx| {
                     let other = &labels[other_idx];
-                    label.x < other.x + other.width && label.x + label.width > other.x
+                    label.x < other.x + other.width + 1
+                        && label.x + label.width + 1 > other.x
                 });
                 if !overlaps {
                     labels[orig_idx].row = row_idx;
