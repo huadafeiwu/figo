@@ -104,7 +104,13 @@ impl<'a> StateDiagram<'a> {
             let Some(to) = id_to_layout.get(&t.to) else { continue };
             let from_cx = from.rect.x + from.rect.w / 2;
             let to_cx = to.rect.x + to.rect.w / 2;
-            let lx = ((from_cx + to_cx) / 2).saturating_sub(lw / 2);
+            // Mirror draw_external_transition: reverse labels center on to_cx.
+            let cx = if from.rect.y >= to.rect.y && from_cx != to_cx {
+                to_cx
+            } else {
+                (from_cx + to_cx) / 2
+            };
+            let lx = cx.saturating_sub(lw / 2);
             total_w = total_w.max(lx + lw);
         }
 
@@ -365,18 +371,24 @@ fn apply_gap_expansion(
     if gap_extra.is_empty() {
         return;
     }
+    // Deduplicate extras by ty (the lower y of each gap). Multiple gaps
+    // sharing the same ty should only expand once (take the max extra),
+    // not once per state.
+    let mut ty_extras: HashMap<usize, usize> = HashMap::new();
+    for ((_fy, ty, _fx, _tx), extra) in gap_extra {
+        ty_extras.entry(*ty).and_modify(|v| *v = (*v).max(*extra)).or_insert(*extra);
+    }
+
     // Sort layouts by y to process top-to-bottom.
     layouts.sort_by_key(|l| l.rect.y);
 
-    // Use original y for gap matching; accumulate expansion downward.
+    // Accumulate expansion downward; each ty's extra is counted once.
     let mut cumul = 0usize;
     for layout in layouts.iter_mut() {
         let orig_y = layout.rect.y;
-        // Check if there's a gap ending at this state's original y.
-        for ((_fy, ty, _fx, _tx), extra) in gap_extra {
-            if *ty == orig_y {
+        for (&ty, &extra) in &ty_extras {
+            if ty == orig_y {
                 cumul += extra;
-                break;
             }
         }
         layout.rect.y = orig_y + cumul;
@@ -568,12 +580,18 @@ fn draw_external_transition(
     // row > 0: label sits above to avoid x overlap with another label.
     if let Some(text) = label {
         let lw = text.width();
-        let label_x = (from_cx + to_cx) / 2;
-        let mut label_x = label_x.saturating_sub(lw / 2);
-        // Clamp to canvas bounds.
+        // row 0: label on corridor (center of from_cx/to_cx).
+        // row>0: label on the vertical leg that exists above route_y:
+        //   forward → from-leg (from_cx), reverse → to-leg (to_cx).
+        let base_x = if row > 0 {
+            if forward { from_cx } else { to_cx }
+        } else {
+            (from_cx + to_cx) / 2
+        };
+        let mut label_x = base_x.saturating_sub(lw / 2);
         label_x = label_x.min(surface.width().saturating_sub(lw));
-        // Clamp within corridor so both sides stay visible.
-        if right_x > left_x && lw < right_x - left_x + 1 {
+        // Corridor clamping only when label is on the corridor (row 0).
+        if row == 0 && right_x > left_x && lw < right_x - left_x + 1 {
             label_x = label_x.max(left_x).min(right_x + 1 - lw);
         }
         let label_y = if row == 0 { route_y } else { route_y.saturating_sub(row * 2) };
