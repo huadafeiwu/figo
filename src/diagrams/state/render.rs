@@ -4,7 +4,7 @@
 //! get a double rounded border. Transitions are routed orthogonally with
 //! arrowheads and optional labels.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::canvas::{Canvas, Layer};
@@ -97,20 +97,22 @@ impl<'a> StateDiagram<'a> {
         let mut total_w = compute_canvas_width(&layouts, &params).max(self.width);
 
         // Ensure canvas is wide enough for all transition labels.
-        for t in &self.transitions {
+        for (idx, t) in self.transitions.iter().enumerate() {
             let Some(text) = t.label.as_ref() else { continue };
             let lw = text.width();
             let Some(from) = id_to_layout.get(&t.from) else { continue };
             let Some(to) = id_to_layout.get(&t.to) else { continue };
             let from_cx = from.rect.x + from.rect.w / 2;
             let to_cx = to.rect.x + to.rect.w / 2;
-            // Mirror draw_external_transition: reverse labels center on to_cx.
-            let cx = if from.rect.y >= to.rect.y && from_cx != to_cx {
-                to_cx
+            // Mirror draw_external_transition's base_x logic exactly.
+            let row = label_rows.get(&idx).copied().unwrap_or(0);
+            let fwd = from.rect.y < to.rect.y;
+            let base_x = if row > 0 {
+                if fwd { from_cx } else { to_cx }
             } else {
                 (from_cx + to_cx) / 2
             };
-            let lx = cx.saturating_sub(lw / 2);
+            let lx = base_x.saturating_sub(lw / 2);
             total_w = total_w.max(lx + lw);
         }
 
@@ -382,13 +384,16 @@ fn apply_gap_expansion(
     // Sort layouts by y to process top-to-bottom.
     layouts.sort_by_key(|l| l.rect.y);
 
-    // Accumulate expansion downward; each ty's extra is counted once.
+    // Accumulate expansion downward; each ty's extra is counted once
+    // even if multiple states share the same y.
     let mut cumul = 0usize;
+    let mut fired: HashSet<usize> = HashSet::new();
     for layout in layouts.iter_mut() {
         let orig_y = layout.rect.y;
         for (&ty, &extra) in &ty_extras {
-            if ty == orig_y {
+            if ty == orig_y && !fired.contains(&ty) {
                 cumul += extra;
+                fired.insert(ty);
             }
         }
         layout.rect.y = orig_y + cumul;
@@ -615,6 +620,20 @@ fn draw_external_transition(
                     glyphs.horizontal,
                     Layer::Connector,
                 );
+            }
+        }
+
+        // For row>0, restore vertical leg above and below the label so the
+        // arrowhead stays connected to the corridor.
+        if row > 0 {
+            let vcol = if forward { from_cx } else { to_cx };
+            let top_y = if forward { from_anchor } else { to_anchor };
+            let leg_top = top_y.min(route_y);
+            for ly in leg_top..label_y {
+                surface.put_layered(vcol, ly, glyphs.vertical, Layer::Connector);
+            }
+            for ly in (label_y + 1)..=route_y {
+                surface.put_layered(vcol, ly, glyphs.vertical, Layer::Connector);
             }
         }
     }
