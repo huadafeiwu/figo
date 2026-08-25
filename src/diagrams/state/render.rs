@@ -78,8 +78,13 @@ impl<'a> StateDiagram<'a> {
         let mut layouts =
             layout_states(&self.states, &self.transitions, self.initial, self.width, &params);
         let label_rows = compute_label_rows(&self.transitions, &layouts);
+
+        // Compute per-gap max row and expand gaps accordingly.
+        let gap_extra = compute_gap_expansion(&self.transitions, &layouts, &label_rows);
+        apply_gap_expansion(&mut layouts, &gap_extra, &params);
+
+        // Shift states down for top margin (room for labels above topmost state).
         let max_label_row = label_rows.values().copied().max().unwrap_or(0);
-        // Shift states down to make room for label rows above the topmost states.
         if max_label_row > 0 {
             shift_layouts(&mut layouts, max_label_row + 1);
         }
@@ -235,6 +240,75 @@ fn compute_label_rows(
 fn shift_layouts(layouts: &mut [StateLayout], dy: usize) {
     for layout in layouts.iter_mut() {
         layout.rect.y += dy;
+    }
+}
+
+/// Compute how many extra rows each vertical gap needs to fit its labels.
+/// Returns a map from (from_y, to_y) gap key to extra rows needed.
+fn compute_gap_expansion(
+    transitions: &[Transition],
+    layouts: &[StateLayout],
+    label_rows: &HashMap<usize, usize>,
+) -> HashMap<(usize, usize), usize> {
+    let id_to_layout: HashMap<&str, &StateLayout> =
+        layouts.iter().map(|l| (l.id.as_str(), l)).collect();
+
+    let mut gap_max_row: HashMap<(usize, usize), usize> = HashMap::new();
+
+    for (idx, t) in transitions.iter().enumerate() {
+        if t.from == t.to {
+            continue;
+        }
+        let Some(from) = id_to_layout.get(t.from.as_str()) else { continue };
+        let Some(to) = id_to_layout.get(t.to.as_str()) else { continue };
+        let row = label_rows.get(&idx).copied().unwrap_or(0);
+        let gap_key = if from.rect.y < to.rect.y {
+            (from.rect.y, to.rect.y)
+        } else {
+            (to.rect.y, from.rect.y)
+        };
+        gap_max_row
+            .entry(gap_key)
+            .and_modify(|r| *r = (*r).max(row))
+            .or_insert(row);
+    }
+
+    // Extra rows needed: each row beyond 0 needs 2 extra rows in the gap.
+    let mut expansion = HashMap::new();
+    for (key, max_row) in gap_max_row {
+        if max_row > 0 {
+            expansion.insert(key, max_row * 2);
+        }
+    }
+    expansion
+}
+
+/// Expand gaps between states by inserting extra rows. States below a
+/// gap are shifted down by the accumulated extra.
+fn apply_gap_expansion(
+    layouts: &mut [StateLayout],
+    gap_extra: &HashMap<(usize, usize), usize>,
+    params: &LayoutParams,
+) {
+    if gap_extra.is_empty() {
+        return;
+    }
+    // Sort layouts by y to process top-to-bottom.
+    layouts.sort_by_key(|l| l.rect.y);
+
+    // Build a map from y to accumulated expansion below that y.
+    // For each gap (from_y, to_y), states at or below to_y get shifted
+    // down by the extra rows for that gap.
+    let mut cumul = 0usize;
+    for layout in layouts.iter_mut() {
+        // Check if there's a gap ending at this state's original y.
+        for ((fy, ty), extra) in gap_extra {
+            if *ty == layout.rect.y {
+                cumul += extra;
+                break;
+            }
+        }
+        layout.rect.y += cumul;
     }
 }
 
