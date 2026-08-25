@@ -293,19 +293,18 @@ fn apply_gap_expansion(
     // Sort layouts by y to process top-to-bottom.
     layouts.sort_by_key(|l| l.rect.y);
 
-    // Build a map from y to accumulated expansion below that y.
-    // For each gap (from_y, to_y), states at or below to_y get shifted
-    // down by the extra rows for that gap.
+    // Use original y for gap matching; accumulate expansion downward.
     let mut cumul = 0usize;
     for layout in layouts.iter_mut() {
+        let orig_y = layout.rect.y;
         // Check if there's a gap ending at this state's original y.
         for ((_fy, ty), extra) in gap_extra {
-            if *ty == layout.rect.y {
+            if *ty == orig_y {
                 cumul += extra;
                 break;
             }
         }
-        layout.rect.y += cumul;
+        layout.rect.y = orig_y + cumul;
     }
 }
 
@@ -493,10 +492,12 @@ fn draw_external_transition(
     if let Some(text) = label {
         let label_x = (from_cx + to_cx) / 2;
         let label_x = label_x.saturating_sub(text.width() / 2);
+        // Clamp label_x to stay within the canvas bounds.
+        let label_x = label_x.min(surface.width().saturating_sub(text.width()));
         let label_y = route_y.saturating_sub(1 + row * 2);
         // Clamp label_y to stay within the gap between the two states,
         // never overlapping either state box's label row.
-        let gap_top = from_anchor.min(to_anchor);
+        let gap_top = from_anchor.min(to_anchor) + 1;
         let gap_bottom = from_anchor.max(to_anchor).saturating_sub(1);
         let label_y = label_y.clamp(gap_top, gap_bottom);
         surface.put_str_layered(label_x, label_y, text, Layer::Label);
