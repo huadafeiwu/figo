@@ -512,6 +512,30 @@ fn draw_external_transition(
         let label_x = label_x.min(surface.width().saturating_sub(text.width()));
         let label_y = if row == 0 { route_y } else { route_y.saturating_sub(row * 2) };
         surface.put_str_layered(label_x, label_y, text, Layer::Label);
+
+        // Restore corridor line on both sides of the label so it stays
+        // connected (label only replaces the segment it occupies).
+        if label_y == route_y && right_x > left_x {
+            let label_end = label_x + text.width();
+            if label_x > left_x {
+                surface.put_horizontal(
+                    left_x,
+                    route_y,
+                    label_x - left_x,
+                    glyphs.horizontal,
+                    Layer::Connector,
+                );
+            }
+            if label_end < right_x {
+                surface.put_horizontal(
+                    label_end,
+                    route_y,
+                    right_x - label_end + 1,
+                    glyphs.horizontal,
+                    Layer::Connector,
+                );
+            }
+        }
     }
 }
 
