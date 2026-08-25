@@ -267,10 +267,7 @@ fn compute_gap_expansion(
         } else {
             (to.rect.y, from.rect.y)
         };
-        gap_max_row
-            .entry(gap_key)
-            .and_modify(|r| *r = (*r).max(row))
-            .or_insert(row);
+        gap_max_row.entry(gap_key).and_modify(|r| *r = (*r).max(row)).or_insert(row);
     }
 
     // Extra rows needed: each row beyond 0 needs 2 extra rows in the gap.
