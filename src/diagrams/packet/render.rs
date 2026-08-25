@@ -137,6 +137,10 @@ pub(super) fn draw_middle_row(
         canvas.put_layered(fr, y, glyphs.vertical, Layer::NodeBorder, None);
         write_centered_label(canvas, y, fl + 1, fr.saturating_sub(fl + 1), &span.name);
     }
+    // Ensure the box edge walls are present even when the last word is not
+    // full 32 bits (no span ends at bit 32, so packet_right is never drawn).
+    canvas.put_layered(layout.packet_left, y, glyphs.vertical, Layer::NodeBorder, None);
+    canvas.put_layered(layout.packet_right, y, glyphs.vertical, Layer::NodeBorder, None);
 }
 
 /// Drop the field name centered into the interior columns.

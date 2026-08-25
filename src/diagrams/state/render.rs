@@ -152,6 +152,7 @@ struct LabelInfo {
     x: usize,
     width: usize,
     row: usize,
+    gap_key: (usize, usize),
 }
 
 fn compute_label_rows(
@@ -160,7 +161,6 @@ fn compute_label_rows(
 ) -> HashMap<usize, usize> {
     let id_to_layout: HashMap<&str, &StateLayout> =
         layouts.iter().map(|l| (l.id.as_str(), l)).collect();
-    // In FSM diagrams there are no composite states (all transitions are external).
     let mut labels: Vec<LabelInfo> = Vec::new();
 
     for (idx, t) in transitions.iter().enumerate() {
@@ -175,36 +175,57 @@ fn compute_label_rows(
         let to_cx = to.rect.x + to.rect.w / 2;
         let label_x = (from_cx + to_cx) / 2;
         let label_x = label_x.saturating_sub(text.width() / 2);
-        labels.push(LabelInfo { transition_index: idx, x: label_x, width: text.width(), row: 0 });
+        // Group labels by the vertical gap they occupy so that labels in
+        // different gaps don't push each other to higher rows.
+        let gap_key = if from.rect.y < to.rect.y {
+            (from.rect.y, to.rect.y)
+        } else {
+            (to.rect.y, from.rect.y)
+        };
+        labels.push(LabelInfo {
+            transition_index: idx,
+            x: label_x,
+            width: text.width(),
+            row: 0,
+            gap_key,
+        });
     }
 
     if labels.is_empty() {
         return HashMap::new();
     }
 
-    let mut indices: Vec<usize> = (0..labels.len()).collect();
-    indices.sort_by(|a, b| labels[*a].x.cmp(&labels[*b].x));
+    // Group labels by gap_key, then assign rows within each group.
+    let mut gap_groups: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+    for (i, label) in labels.iter().enumerate() {
+        gap_groups.entry(label.gap_key).or_default().push(i);
+    }
 
-    let mut rows: Vec<Vec<usize>> = Vec::new();
-    for orig_idx in indices {
-        let label = &labels[orig_idx];
-        let mut placed = false;
-        for (row_idx, row) in rows.iter_mut().enumerate() {
-            let overlaps = row.iter().any(|&other_idx| {
-                let other = &labels[other_idx];
-                label.x < other.x + other.width && label.x + label.width > other.x
-            });
-            if !overlaps {
-                labels[orig_idx].row = row_idx;
-                row.push(orig_idx);
-                placed = true;
-                break;
+    for (_, mut group_indices) in gap_groups {
+        // Sort within the group by x for stable row assignment.
+        group_indices.sort_by(|a, b| labels[*a].x.cmp(&labels[*b].x));
+
+        let mut rows: Vec<Vec<usize>> = Vec::new();
+        for orig_idx in group_indices {
+            let label = &labels[orig_idx];
+            let mut placed = false;
+            for (row_idx, row) in rows.iter_mut().enumerate() {
+                let overlaps = row.iter().any(|&other_idx| {
+                    let other = &labels[other_idx];
+                    label.x < other.x + other.width && label.x + label.width > other.x
+                });
+                if !overlaps {
+                    labels[orig_idx].row = row_idx;
+                    row.push(orig_idx);
+                    placed = true;
+                    break;
+                }
             }
-        }
-        if !placed {
-            let row_idx = rows.len();
-            rows.push(vec![orig_idx]);
-            labels[orig_idx].row = row_idx;
+            if !placed {
+                let row_idx = rows.len();
+                rows.push(vec![orig_idx]);
+                labels[orig_idx].row = row_idx;
+            }
         }
     }
 
@@ -402,6 +423,11 @@ fn draw_external_transition(
         let label_x = (from_cx + to_cx) / 2;
         let label_x = label_x.saturating_sub(text.width() / 2);
         let label_y = route_y.saturating_sub(1 + row * 2);
+        // Clamp label_y to stay within the gap between the two states,
+        // never overlapping either state box's label row.
+        let gap_top = from_anchor.min(to_anchor);
+        let gap_bottom = from_anchor.max(to_anchor).saturating_sub(1);
+        let label_y = label_y.clamp(gap_top, gap_bottom);
         surface.put_str_layered(label_x, label_y, text, Layer::Label);
     }
 }
