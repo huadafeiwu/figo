@@ -6,7 +6,53 @@ on:
   workflow_dispatch:
 
 jobs:
+  update-snapshots:
+    runs-on: ubuntu-latest
+    # Only run on pushes to main, skip for PRs
+    if: github.event_name == 'push'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Run cargo fmt
+        run: cargo fmt --all
+
+      - name: Update snapshots
+        run: INSTA_UPDATE=always cargo test --lib
+        continue-on-error: true
+
+      - name: Accept new snapshots
+        run: cargo insta accept
+        continue-on-error: true
+
+      - name: Check for changes
+        id: changes
+        run: |
+          if git diff --quiet; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit and push updated snapshots
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "ci: auto-update snapshots"
+          git push
+
   build:
+    needs: update-snapshots
     strategy:
       fail-fast: false
       matrix:
