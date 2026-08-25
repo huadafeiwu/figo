@@ -296,7 +296,7 @@ fn expand_corridors_for_labels(
             continue;
         }
         let corridor_w = from_cx.abs_diff(to_cx) + 1;
-        let needed = lw + 2; // label + 1 cell --- on each side
+        let needed = lw + 4; // label + 1 cell --- and 1 cell + on each side
         if needed > corridor_w {
             let extra = needed - corridor_w;
             let existing = shifts.get(&to_idx).copied().unwrap_or(0);
