@@ -230,8 +230,7 @@ fn compute_label_rows(
             for (row_idx, row) in rows.iter_mut().enumerate() {
                 let overlaps = row.iter().any(|&other_idx| {
                     let other = &labels[other_idx];
-                    label.x < other.x + other.width + 1
-                        && label.x + label.width + 1 > other.x
+                    label.x < other.x + other.width + 1 && label.x + label.width + 1 > other.x
                 });
                 if !overlaps {
                     labels[orig_idx].row = row_idx;
