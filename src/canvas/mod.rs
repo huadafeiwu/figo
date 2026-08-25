@@ -336,6 +336,12 @@ impl Canvas {
     /// Render the canvas as a string. Trailing whitespace per row is
     /// trimmed. When `color` is true, ANSI escapes are emitted for
     /// foreground colors per cell.
+    ///
+    /// Wide characters (display width 2, e.g. CJK) occupy two cells when
+    /// placed via `put_str_layered`; the second cell is left as a default
+    /// space placeholder. Here we emit the wide glyph once and skip the
+    /// trailing placeholder so the output display width matches the canvas
+    /// column count.
     pub fn render(&self, color: bool) -> String {
         let mut out = String::with_capacity(self.width * (self.height + 1));
         for y in 0..self.height {
@@ -345,7 +351,9 @@ impl Canvas {
 
             if color {
                 let mut current_fg: Option<Color> = None;
-                for cell in row.iter().take(end) {
+                let mut i = 0;
+                while i < end {
+                    let cell = &row[i];
                     if cell.fg != current_fg {
                         current_fg = cell.fg;
                         match current_fg {
@@ -354,13 +362,25 @@ impl Canvas {
                         }
                     }
                     out.push(cell.ch);
+                    if UnicodeWidthChar::width(cell.ch).unwrap_or(1) == 2 {
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
                 }
                 if current_fg.is_some() {
                     out.push_str("\x1b[0m");
                 }
             } else {
-                for cell in row.iter().take(end) {
+                let mut i = 0;
+                while i < end {
+                    let cell = &row[i];
                     out.push(cell.ch);
+                    if UnicodeWidthChar::width(cell.ch).unwrap_or(1) == 2 {
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
                 }
             }
             out.push('\n');
