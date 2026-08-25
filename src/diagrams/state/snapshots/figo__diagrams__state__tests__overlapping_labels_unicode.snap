@@ -5,19 +5,22 @@ expression: out
                                                           ╭────────────╮
                                                     ●────>│     A      │
                                                           ╰────────────╯
+                                                                 │
                                                         very_long_label_one
                                                                  │
                                                                  │
                                                           ╭──────▼─────╮
                                                           │     B      │
                                                           ╰────────────╯
+                                                                 │
                                                         very_long_label_two
                                                                  │
                                                                  │
                                                           ╭──────▼─────╮
                                                           │     C      │
                                                           ╰────────────╯
-                                                       very_long_label_three
+                                                                 │
+                                                        very_long_label_three
                                                                  │
                                                                  │
                                                           ╭──────▼─────╮
