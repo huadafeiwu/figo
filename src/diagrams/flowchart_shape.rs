@@ -38,7 +38,7 @@ pub enum NodeShape {
 ///   and width `2*r + 1`. This keeps the diamond roughly square and wide
 ///   enough for the label to sit on the middle row.
 pub fn node_dims(label: &str, shape: NodeShape, total_width: usize) -> (usize, usize) {
-    let label_w = UnicodeWidthStr::width(label);
+    let label_w = label.width();
     match shape {
         NodeShape::Rectangle | NodeShape::Rounded => ((label_w + 4).min(total_width).max(6), 3),
         NodeShape::Diamond => {

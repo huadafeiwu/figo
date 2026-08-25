@@ -88,7 +88,7 @@ impl<'a> SequenceDiagram<'a> {
         let tee_up = rounded.tee_up;
 
         let n = self.participants.len();
-        let max_name_len = self.participants.iter().map(|p| UnicodeWidthStr::width(*p)).max().unwrap_or(5);
+        let max_name_len = self.participants.iter().map(|p| p.width()).max().unwrap_or(5);
 
         // Box width = lane_width - LANE_GAP so adjacent boxes are separated
         // by a 2-cell horizontal gap. Lane width is the per-participant
@@ -149,7 +149,7 @@ impl<'a> SequenceDiagram<'a> {
         for (i, name) in self.participants.iter().enumerate() {
             let hx = i * lane_width + LANE_GAP_HALF;
             canvas.draw_rect(hx, 0, box_width, header_height, &rounded)?;
-            let name_x = hx + (box_width.saturating_sub(UnicodeWidthStr::width(name))) / 2;
+            let name_x = hx + (box_width.saturating_sub(name.width())) / 2;
             canvas.put_str_layered(name_x, 1, name, Layer::NodeContent, None);
             // Tee-junction glyph anchors the lifeline visually to the header.
             let lifeline_x = lifeline_x_for(i);
@@ -207,7 +207,7 @@ impl<'a> SequenceDiagram<'a> {
                 // each side keeps the label flush within the empty space.
                 let inner_left = left_x + 1;
                 let inner_right = right_x.saturating_sub(1);
-                let label_w = UnicodeWidthStr::width(msg.label.as_str());
+                let label_w = msg.label.width();
                 let inner_w = inner_right.saturating_sub(inner_left) + 1;
                 let label_x = if label_w <= inner_w {
                     inner_left + (inner_w - label_w) / 2

@@ -48,7 +48,7 @@ impl Default for LayoutParams {
 
 /// State size in cells (width, height). Width depends on label length.
 fn state_size(label: &str, st: StateType, min_w: usize, base_h: usize, extra_h: usize) -> Size {
-    let w = (UnicodeWidthStr::width(label) + 4).max(min_w);
+    let w = (label.width() + 4).max(min_w);
     let h = match st {
         StateType::Simple => base_h,
         StateType::Accepting => base_h + extra_h,

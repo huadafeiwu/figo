@@ -74,7 +74,7 @@ pub(super) fn draw_scale(canvas: &mut Canvas, layout: Layout) {
     for bit in [0usize, 4, 8, 12, 16, 20, 24, 28, 31] {
         let x = layout.packet_left + bit * layout.col_per_bit;
         let label = bit.to_string();
-        let label_x = x.saturating_sub(UnicodeWidthStr::width(label.as_str()).saturating_sub(1));
+        let label_x = x.saturating_sub(label.width().saturating_sub(1));
         canvas.put_str_layered(label_x, 0, &label, Layer::Grid, None);
     }
 }
@@ -150,7 +150,7 @@ pub(super) fn write_centered_label(
     if inner_w == 0 {
         return;
     }
-    let total = UnicodeWidthStr::width(name);
+    let total = name.width();
     let (label, chars) = if total <= inner_w {
         (name.to_string(), total)
     } else {

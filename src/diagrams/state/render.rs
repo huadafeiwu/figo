@@ -174,11 +174,11 @@ fn compute_label_rows(
         let from_cx = from.rect.x + from.rect.w / 2;
         let to_cx = to.rect.x + to.rect.w / 2;
         let label_x = (from_cx + to_cx) / 2;
-        let label_x = label_x.saturating_sub(UnicodeWidthStr::width(text.as_str()) / 2);
+        let label_x = label_x.saturating_sub(text.width() / 2);
         labels.push(LabelInfo {
             transition_index: idx,
             x: label_x,
-            width: UnicodeWidthStr::width(text.as_str()),
+            width: text.width(),
             row: 0,
         });
     }
@@ -309,7 +309,8 @@ fn draw_accepting_state(
             surface.put_horizontal(ix + 1, iy + ry, iw.saturating_sub(2), ' ', Layer::NodeContent);
         }
         // Re-draw the label at the center.
-        let lx = layout.rect.x + (layout.rect.w.saturating_sub(UnicodeWidthStr::width(layout.label.as_str()))) / 2;
+        let lx = layout.rect.x
+            + (layout.rect.w.saturating_sub(layout.label.width())) / 2;
         let ly = layout.rect.y + layout.rect.h / 2;
         surface.put_str_layered(lx, ly, &layout.label, Layer::NodeContent);
     }
@@ -405,7 +406,7 @@ fn draw_external_transition(
     // Label near the horizontal corridor.
     if let Some(text) = label {
         let label_x = (from_cx + to_cx) / 2;
-        let label_x = label_x.saturating_sub(UnicodeWidthStr::width(text.as_str()) / 2);
+        let label_x = label_x.saturating_sub(text.width() / 2);
         let label_y = route_y.saturating_sub(1 + row * 2);
         surface.put_str_layered(label_x, label_y, text, Layer::Label);
     }
