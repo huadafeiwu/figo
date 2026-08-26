@@ -196,7 +196,6 @@ impl<'a> SequenceDiagram<'a> {
             let from_x = lifeline_x_for(from_idx);
             let to_x = lifeline_x_for(to_idx);
             let msg_h = msg_heights[mi];
-            let arrow_y = msg_y;
             let label_lines = if from_idx == to_idx {
                 let avail = (self.width / 2).clamp(10, 40);
                 let (lines, _, _) = crate::text::wrap_label(&msg.label, avail);
@@ -207,6 +206,9 @@ impl<'a> SequenceDiagram<'a> {
                 lines
             };
             let num_lines = label_lines.len().max(1);
+            // Place the arrow below the label block so labels never overlap
+            // the header or previous message's arrow.
+            let arrow_y = msg_y + num_lines;
 
             if from_x == to_x {
                 // Self-message: small loop to the right of the lifeline.
@@ -451,9 +453,10 @@ mod tests {
         target_lifeline: char,
         reversed: bool,
     ) {
-        // Arrow row index = header_height (3) + 1 = 4 for the first message.
+        // Arrow row index = header_height (3) + 1 (gap) + num_lines (1 for "hi")
+        // = 5 for the first message (label is 1 line, drawn above the arrow).
         let arrow_row =
-            rendered.lines().nth(4).unwrap_or_else(|| panic!("missing row 4: {rendered:?}"));
+            rendered.lines().nth(5).unwrap_or_else(|| panic!("missing row 5: {rendered:?}"));
         assert!(
             arrow_row.contains(arrow_glyph),
             "arrowhead {arrow_glyph:?} missing from {arrow_row:?}",

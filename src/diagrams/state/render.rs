@@ -335,19 +335,27 @@ fn expand_corridors_for_labels(
         }
 
         let extra = (max_needed - corridor_w) as isize;
-        let direction = if to_cx > from_cx { 1isize } else { -1 };
-        let shift = extra * direction;
 
-        // Apply this shift immediately to the `to` state and all same-y
-        // peers in the shift direction.
-        let y = layouts[to_idx].rect.y;
-        let x = layouts[to_idx].rect.x;
-        for layout in layouts.iter_mut() {
-            if layout.rect.y != y {
-                continue;
+        // When `to` is to the right of `from`, shift `to` (and same-y peers
+        // to its right) rightward to widen the corridor.
+        // When `to` is to the LEFT of `from`, shift `from` (and same-y peers
+        // to its right) rightward instead — this widens the corridor without
+        // pushing any state leftward (which causes visual misalignment).
+        if to_cx > from_cx {
+            let y = layouts[to_idx].rect.y;
+            let x = layouts[to_idx].rect.x;
+            for layout in layouts.iter_mut() {
+                if layout.rect.y == y && layout.rect.x >= x {
+                    layout.rect.x += extra as usize;
+                }
             }
-            if shift > 0 && layout.rect.x >= x || shift < 0 && layout.rect.x <= x {
-                layout.rect.x = (layout.rect.x as isize + shift).max(0) as usize;
+        } else {
+            let y = layouts[from_idx].rect.y;
+            let x = layouts[from_idx].rect.x;
+            for layout in layouts.iter_mut() {
+                if layout.rect.y == y && layout.rect.x >= x {
+                    layout.rect.x += extra as usize;
+                }
             }
         }
     }
