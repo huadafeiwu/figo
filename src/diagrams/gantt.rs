@@ -109,25 +109,42 @@ impl GanttChart {
             #[allow(dead_code)]
             is_section: bool,
             task: Option<GanttTask>,
+            separator_before: bool,
         }
 
         let mut entries: Vec<RowEntry> = Vec::new();
         let mut total_rows = 0usize;
-        for section in &self.sections {
+        for (si, section) in self.sections.iter().enumerate() {
+            let mut first_in_section = true;
             if !section.label.is_empty() {
                 let (lines, _, _) = crate::text::wrap_label(&section.label, inner_label_w);
+                let sep = si > 0;
+                if sep {
+                    total_rows += 1;
+                }
                 total_rows += lines.len().max(1);
-                entries.push(RowEntry { label_lines: lines, is_section: true, task: None });
+                entries.push(RowEntry {
+                    label_lines: lines,
+                    is_section: true,
+                    task: None,
+                    separator_before: sep,
+                });
+                first_in_section = false;
             }
             for task in &section.tasks {
                 let indent = if section.label.is_empty() { "" } else { "  " };
                 let avail = inner_label_w.saturating_sub(if indent.is_empty() { 0 } else { 2 });
                 let (lines, _, _) = crate::text::wrap_label(&task.name, avail);
+                let sep = !first_in_section;
+                if sep {
+                    total_rows += 1;
+                }
                 total_rows += lines.len().max(1);
                 entries.push(RowEntry {
                     label_lines: lines,
                     is_section: false,
                     task: Some(task.clone()),
+                    separator_before: sep,
                 });
             }
         }
@@ -175,6 +192,9 @@ impl GanttChart {
         // Draw tasks and section labels
         let mut row = 3;
         for entry in &entries {
+            if entry.separator_before {
+                row += 1; // blank separator row
+            }
             let label_lines = if entry.label_lines.is_empty() {
                 vec![String::new()]
             } else {

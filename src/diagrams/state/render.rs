@@ -431,9 +431,9 @@ fn compute_gap_expansion(
             1
         };
 
-        // The vertical extent needed is row * 2 (spacing between rows) +
+        // The vertical extent needed is row * 3 (spacing between rows) +
         // num_lines (the label block itself).
-        let extent = row * 2 + num_lines;
+        let extent = row * 3 + num_lines;
         gap_max_extent.entry(gap_key).and_modify(|r| *r = (*r).max(extent)).or_insert(extent);
     }
 
@@ -442,7 +442,7 @@ fn compute_gap_expansion(
     let mut expansion = HashMap::new();
     for (key, extent) in gap_max_extent {
         if extent > 1 {
-            expansion.insert(key, extent * 2);
+            expansion.insert(key, extent * 3);
         }
     }
     expansion
@@ -698,11 +698,11 @@ fn draw_external_transition(
         let base_x =
             if row > 0 { if forward { from_cx } else { to_cx } } else { (from_cx + to_cx) / 2 };
 
-        // Center the multi-line block on route_y (row 0) or route_y - row*2 (row>0).
+        // Center the multi-line block on route_y (row 0) or route_y - row*3 (row>0).
         let block_top = if row == 0 {
             route_y.saturating_sub(num_lines / 2)
         } else {
-            route_y.saturating_sub(row * 2).saturating_sub(num_lines / 2)
+            route_y.saturating_sub(row * 3).saturating_sub(num_lines / 2)
         };
 
         for (i, line) in lines.iter().enumerate() {
