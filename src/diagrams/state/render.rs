@@ -198,7 +198,7 @@ struct LabelInfo {
     x: usize,
     width: usize,
     row: usize,
-    gap_key: (usize, usize, usize, usize),
+    gap_key: (usize, usize),
 }
 
 fn compute_label_rows(
@@ -221,12 +221,13 @@ fn compute_label_rows(
         let to_cx = to.rect.x + to.rect.w / 2;
         let label_x = (from_cx + to_cx) / 2;
         let label_x = label_x.saturating_sub(text.width() / 2);
-        // Group labels by their gap (identified by both y and x of endpoints)
-        // so labels in different gaps don't push each other to higher rows.
+        // Group labels by their vertical gap (y pair only) so labels
+        // in the same route_y row are compared for overlap even if they
+        // connect to different sibling states.
         let gap_key = if from.rect.y < to.rect.y {
-            (from.rect.y, to.rect.y, from_cx, to_cx)
+            (from.rect.y, to.rect.y)
         } else {
-            (to.rect.y, from.rect.y, to_cx, from_cx)
+            (to.rect.y, from.rect.y)
         };
         labels.push(LabelInfo {
             transition_index: idx,
@@ -242,7 +243,7 @@ fn compute_label_rows(
     }
 
     // Group labels by gap_key, then assign rows within each group.
-    let mut gap_groups: HashMap<(usize, usize, usize, usize), Vec<usize>> = HashMap::new();
+    let mut gap_groups: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
     for (i, label) in labels.iter().enumerate() {
         gap_groups.entry(label.gap_key).or_default().push(i);
     }
@@ -369,13 +370,13 @@ fn compute_gap_expansion(
     transitions: &[Transition],
     layouts: &[StateLayout],
     label_rows: &HashMap<usize, usize>,
-) -> HashMap<(usize, usize, usize, usize), usize> {
+) -> HashMap<(usize, usize), usize> {
     let id_to_layout: HashMap<&str, &StateLayout> =
         layouts.iter().map(|l| (l.id.as_str(), l)).collect();
 
     // Track max (row + num_lines) per gap — the vertical space needed is
     // determined by how many rows of multi-line labels stack up.
-    let mut gap_max_extent: HashMap<(usize, usize, usize, usize), usize> = HashMap::new();
+    let mut gap_max_extent: HashMap<(usize, usize), usize> = HashMap::new();
 
     for (idx, t) in transitions.iter().enumerate() {
         if t.from == t.to {
@@ -387,9 +388,9 @@ fn compute_gap_expansion(
         let from_cx = from.rect.x + from.rect.w / 2;
         let to_cx = to.rect.x + to.rect.w / 2;
         let gap_key = if from.rect.y < to.rect.y {
-            (from.rect.y, to.rect.y, from_cx, to_cx)
+            (from.rect.y, to.rect.y)
         } else {
-            (to.rect.y, from.rect.y, to_cx, from_cx)
+            (to.rect.y, from.rect.y)
         };
 
         // Estimate the label's line count for wrapping.
@@ -423,7 +424,7 @@ fn compute_gap_expansion(
 /// gap are shifted down by the accumulated extra.
 fn apply_gap_expansion(
     layouts: &mut [StateLayout],
-    gap_extra: &HashMap<(usize, usize, usize, usize), usize>,
+    gap_extra: &HashMap<(usize, usize), usize>,
     _params: &LayoutParams,
 ) {
     if gap_extra.is_empty() {
@@ -433,7 +434,7 @@ fn apply_gap_expansion(
     // sharing the same ty should only expand once (take the max extra),
     // not once per state.
     let mut ty_extras: HashMap<usize, usize> = HashMap::new();
-    for ((_fy, ty, _fx, _tx), extra) in gap_extra {
+    for ((_fy, ty), extra) in gap_extra {
         ty_extras.entry(*ty).and_modify(|v| *v = (*v).max(*extra)).or_insert(*extra);
     }
 
