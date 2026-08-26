@@ -115,7 +115,6 @@ impl GanttChart {
         let mut entries: Vec<RowEntry> = Vec::new();
         let mut total_rows = 0usize;
         for (si, section) in self.sections.iter().enumerate() {
-            let mut first_in_section = true;
             if !section.label.is_empty() {
                 let (lines, _, _) = crate::text::wrap_label(&section.label, inner_label_w);
                 let sep = si > 0;
@@ -129,13 +128,12 @@ impl GanttChart {
                     task: None,
                     separator_before: sep,
                 });
-                first_in_section = false;
             }
             for task in &section.tasks {
                 let indent = if section.label.is_empty() { "" } else { "  " };
                 let avail = inner_label_w.saturating_sub(if indent.is_empty() { 0 } else { 2 });
                 let (lines, _, _) = crate::text::wrap_label(&task.name, avail);
-                let sep = !first_in_section;
+                let sep = false;
                 if sep {
                     total_rows += 1;
                 }
