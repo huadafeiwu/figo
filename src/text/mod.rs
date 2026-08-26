@@ -7,8 +7,9 @@ use unicode_width::UnicodeWidthStr;
 /// Wrap `text` so that each line fits within `max_width` characters (measured
 /// in display width, not raw `str::len`).
 ///
-/// Words are broken at whitespace boundaries. A single word longer than
-/// `max_width` is broken mid-word. Blank input yields an empty vector.
+/// Tokens are broken at whitespace, common separator characters (`_`, `-`,
+/// `.`, `/`), and CJK character boundaries. A single token longer than
+/// `max_width` is broken mid-token. Blank input yields an empty vector.
 pub fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
     if max_width == 0 {
         return text.lines().map(String::from).collect();
@@ -20,26 +21,25 @@ pub fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
             lines.push(String::new());
             continue;
         }
+
+        let tokens = tokenize(input_line);
         let mut current = String::new();
         let mut current_width = 0usize;
 
-        for word in input_line.split(' ') {
-            // Handle consecutive spaces in the source; skip empty tokens
-            // but maintain *single* spaces between words.
-            if word.is_empty() {
+        for (token, needs_space) in tokens {
+            if token.is_empty() {
                 continue;
             }
+            let token_width = UnicodeWidthStr::width(token.as_str());
+            let space_width = if current.is_empty() || !needs_space { 0 } else { 1 };
 
-            let word_width = UnicodeWidthStr::width(word);
-            let space_width = if current.is_empty() { 0 } else { 1 };
-
-            if current_width + space_width + word_width <= max_width {
-                if !current.is_empty() {
+            if current_width + space_width + token_width <= max_width {
+                if needs_space && !current.is_empty() {
                     current.push(' ');
                     current_width += 1;
                 }
-                current.push_str(word);
-                current_width += word_width;
+                current.push_str(&token);
+                current_width += token_width;
             } else {
                 // Flush the current line if it has content.
                 if !current.is_empty() {
@@ -47,22 +47,21 @@ pub fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
                     current_width = 0;
                 }
 
-                // If the word itself exceeds max_width, break it.
-                if word_width > max_width {
-                    // Chunk by max_width display width.
-                    let mut remaining = word.to_string();
+                // If the token itself exceeds max_width, break it.
+                if token_width > max_width {
+                    let mut remaining = token.clone();
                     while UnicodeWidthStr::width(&*remaining) > max_width {
                         let (chunk, rest) = split_at_display_width(&remaining, max_width);
                         lines.push(chunk);
                         remaining = rest;
                     }
                     if !remaining.is_empty() {
-                        current = remaining;
+                        current.push_str(&remaining);
                         current_width = UnicodeWidthStr::width(&*current);
                     }
                 } else {
-                    current.push_str(word);
-                    current_width = word_width;
+                    current.push_str(&token);
+                    current_width = token_width;
                 }
             }
         }
@@ -72,6 +71,50 @@ pub fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
         }
     }
     lines
+}
+
+/// Split text into tokens at whitespace, separator characters (`_`, `-`, `.`,
+/// `/`), and CJK boundaries. Returns `(token, needs_space_before)` pairs.
+/// Separators stay attached to the preceding token (e.g. `driver_bind` →
+/// `driver_`, `bind`). CJK characters are each their own token with no space.
+fn tokenize(text: &str) -> Vec<(String, bool)> {
+    let mut tokens: Vec<(String, bool)> = Vec::new();
+    let mut current = String::new();
+    let mut after_space = false;
+
+    let separators = ['_', '-', '.', '/'];
+
+    for ch in text.chars() {
+        if ch == ' ' {
+            if !current.is_empty() {
+                tokens.push((std::mem::take(&mut current), after_space));
+            }
+            after_space = true;
+        } else if separators.contains(&ch) {
+            current.push(ch);
+            tokens.push((std::mem::take(&mut current), after_space));
+            after_space = false;
+        } else if is_cjk(ch) {
+            if !current.is_empty() {
+                tokens.push((std::mem::take(&mut current), after_space));
+                after_space = false;
+            }
+            tokens.push((ch.to_string(), after_space));
+            after_space = false;
+        } else {
+            current.push(ch);
+        }
+    }
+    if !current.is_empty() {
+        tokens.push((current, after_space));
+    }
+    tokens
+}
+
+/// Check if a character is a CJK or CJK-adjacent character (wide display width).
+fn is_cjk(ch: char) -> bool {
+    use unicode_width::UnicodeWidthChar;
+    UnicodeWidthChar::width(ch).is_some_and(|w| w >= 2)
 }
 
 /// Split `s` at `display_width` counting Unicode display width.
@@ -193,5 +236,25 @@ mod tests {
         assert_eq!(lines, vec!["hello"]);
         assert_eq!(count, 1);
         assert_eq!(max_w, 5);
+    }
+
+    #[test]
+    fn test_smart_split_at_separators() {
+        // driver_bind完成 (16 wide) at width 10: should split at _ not mid-word
+        let (lines, _, _) = wrap_label("driver_bind完成", 10);
+        let all = lines.join("");
+        assert_eq!(all, "driver_bind完成", "no chars lost: {lines:?}");
+        // Should NOT have "bi" and "nd" as separate fragments
+        let joined = lines.join("|");
+        assert!(!joined.contains("bi|nd"), "should not split mid-word 'bind': {joined:?}");
+    }
+
+    #[test]
+    fn test_cjk_no_spaces_inserted() {
+        // CJK characters joined without spaces
+        let label = "开始执行";
+        let (lines, _, _) = wrap_label(label, 6);
+        let reconstructed: String = lines.join("");
+        assert_eq!(reconstructed, label, "no spaces inserted between CJK: {lines:?}");
     }
 }

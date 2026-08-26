@@ -332,14 +332,11 @@ fn expand_corridors_for_labels(
         if needed <= corridor_w {
             continue;
         }
-        // Cap the expansion to avoid excessive layout distortion. When the
-        // corridor is very narrow (e.g. near-column transitions) and the label
-        // is much wider, expanding by the full amount pushes states far off
-        // center. Cap the extra to half the label width — the label will wrap
-        // within the widened (but not over-widened) corridor.
-        let max_extra = lw / 2;
+        // Cap the expansion by canvas_width so the layout doesn't exceed
+        // the user-specified width. Within that limit, expand enough to
+        // fit the full label on one line whenever possible.
         let raw_extra = needed - corridor_w;
-        let extra = raw_extra.min(max_extra).min(canvas_width);
+        let extra = raw_extra.min(canvas_width);
 
         // When `to` is to the right of `from`, shift `to` (and same-y peers
         // to its right) rightward to widen the corridor.
