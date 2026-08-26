@@ -52,6 +52,17 @@ pub fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
                     let mut remaining = token.clone();
                     while UnicodeWidthStr::width(&*remaining) > max_width {
                         let (chunk, rest) = split_at_display_width(&remaining, max_width);
+                        // Avoid leaving a single CJK character (width 2) on
+                        // its own line: if the remainder is a lone CJK char,
+                        // pull it back onto the current chunk.
+                        let rest_w = UnicodeWidthStr::width(&*rest);
+                        if rest_w <= 2 && !chunk.is_empty() {
+                            // Merge the leftover into the last line.
+                            let merged = format!("{}{}", chunk, rest);
+                            lines.push(merged);
+                            remaining.clear();
+                            break;
+                        }
                         lines.push(chunk);
                         remaining = rest;
                     }
