@@ -320,19 +320,16 @@ fn expand_corridors_for_labels(
             continue;
         }
         let corridor_w = from_cx.abs_diff(to_cx) + 1;
-        // Wrap the label to the corridor width first, then use the wrapped
-        // max line width (not the full unwrapped width) to compute how
-        // much extra space we need. This ensures labels that fit within
-        // the corridor after wrapping don't trigger unnecessary expansion,
-        // and labels that still don't fit after wrapping are expanded
-        // proportionally to the wrapped width, bounded by canvas_width.
-        let (_, _, max_lw) = crate::text::wrap_label(text, corridor_w);
-        let needed = max_lw + 4;
+        // Use the full unwrapped label width to decide whether the corridor
+        // needs expanding. This ensures the corridor is widened enough to
+        // fit the label on a single line whenever possible.
+        let lw = text.width();
+        let needed = lw + 4;
         if needed <= corridor_w {
             continue;
         }
         // Cap the expansion so the layout doesn't exceed canvas_width.
-        let max_needed = canvas_width.min(max_lw + 4);
+        let max_needed = canvas_width.min(needed);
         if max_needed <= corridor_w {
             continue;
         }
@@ -645,12 +642,13 @@ fn draw_external_transition(
     if let Some(text) = label {
         use crate::text::wrap_label;
 
-        // Determine available width for wrapping.
+        // Determine available width for wrapping. Use the corridor width
+        // (or remaining canvas width for same-column). wrap_label returns
+        // a single line when the label fits, so short labels stay unwrapped.
         let avail = if right_x > left_x {
-            (right_x - left_x + 1).max(10)
+            (right_x - left_x + 1).max(2)
         } else {
-            // Same-column: use remaining canvas width to the right.
-            canvas_width.saturating_sub(from_cx + 2).max(10)
+            canvas_width.saturating_sub(from_cx + 2).max(2)
         };
 
         let (lines, num_lines, _) = wrap_label(text, avail);
