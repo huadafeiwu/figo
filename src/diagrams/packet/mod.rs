@@ -88,15 +88,10 @@ impl PacketDiagram {
                         let fl = render::wall_left(layout, span.bit_in_word);
                         let fr = render::wall_right(layout, span.bit_in_word, span.bits);
                         let inner_w = fr.saturating_sub(fl + 1);
-                        if inner_w < 2 {
-                            // Too narrow to wrap — fall back to truncation.
-                            let (truncated, _) =
-                                crate::text::split_at_display_width(&span.name, inner_w);
-                            vec![truncated]
-                        } else {
-                            let (lines, _, _) = crate::text::wrap_label(&span.name, inner_w);
-                            if lines.is_empty() { vec![String::new()] } else { lines }
-                        }
+                        // Never truncate — wrap_label uses .max(2) so even
+                        // inner_w=0/1 is safe (wraps to 2-col lines).
+                        let (lines, _, _) = crate::text::wrap_label(&span.name, inner_w);
+                        if lines.is_empty() { vec![String::new()] } else { lines }
                     })
                     .collect()
             })

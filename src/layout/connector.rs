@@ -307,7 +307,7 @@ impl Connector {
         if !has_h {
             // Purely vertical: label just below the source so it is clear
             // which branch it belongs to. Wrap to the remaining width.
-            let avail = w_limit.saturating_sub(sx + 2).max(10);
+            let avail = w_limit.saturating_sub(sx + 2).max(2).min(w_limit);
             let (lines, n, _) = wrap_label(label, avail);
             for (i, line) in lines.iter().enumerate() {
                 let line_w = UnicodeWidthStr::width(line.as_str());
@@ -323,7 +323,7 @@ impl Connector {
             // Horizontal corridor: label one row above it, pinned no higher
             // than the source row so sibling labels line up.
             let center = if sx != tx { mid_x } else { x + len / 2 };
-            let avail = len.min(w_limit).max(10);
+            let avail = len.min(w_limit).max(2);
             let (lines, n, max_lw) = wrap_label(label, avail);
             for (i, line) in lines.iter().enumerate() {
                 let line_w = UnicodeWidthStr::width(line.as_str());
@@ -336,7 +336,7 @@ impl Connector {
             return;
         }
         // Same-row horizontal fallback: one row above.
-        let avail = w_limit.saturating_sub(mid_x).max(10);
+        let avail = w_limit.saturating_sub(mid_x).max(2).min(w_limit);
         let (lines, _, _) = wrap_label(label, avail);
         for (i, line) in lines.iter().enumerate() {
             let line_w = UnicodeWidthStr::width(line.as_str());

@@ -40,7 +40,17 @@ pub enum NodeShape {
 pub fn node_dims(label: &str, shape: NodeShape, total_width: usize) -> (usize, usize) {
     let label_w = label.width();
     match shape {
-        NodeShape::Rectangle | NodeShape::Rounded => ((label_w + 4).min(total_width).max(6), 3),
+        NodeShape::Rectangle | NodeShape::Rounded => {
+            let w = (label_w + 4).min(total_width).max(6);
+            // If label doesn't fit on one line, compute multi-line height.
+            if label_w + 4 > w {
+                let inner_w = w.saturating_sub(2).max(2);
+                let (_, n, _) = crate::text::wrap_label(label, inner_w);
+                (w, 2 + n)
+            } else {
+                (w, 3)
+            }
+        }
         NodeShape::Diamond => {
             let r = (label_w / 2 + 1).max(3);
             let w = 2 * r + 1;

@@ -127,7 +127,8 @@ impl<'a> StateDiagram<'a> {
             total_w = total_w.max(lx + lw);
         }
 
-        let total_h = compute_canvas_height(&layouts, &params, max_label_row);
+        let total_h = compute_canvas_height(&layouts, &params, max_label_row)
+            + self_loop_label_height(&self.transitions, &layouts, total_w);
 
         let mut canvas = Canvas::new(total_w, total_h);
 
@@ -193,6 +194,33 @@ fn compute_canvas_height(
     // multi-line labels, so bottommost already includes that space.
     // Just add a small bottom margin.
     bottommost + 1
+}
+
+/// Compute extra height needed for self-loop labels that may wrap into
+/// multiple lines and extend below the state box.
+fn self_loop_label_height(
+    transitions: &[Transition],
+    layouts: &[StateLayout],
+    canvas_width: usize,
+) -> usize {
+    let id_to_layout: HashMap<&str, &StateLayout> =
+        layouts.iter().map(|l| (l.id.as_str(), l)).collect();
+    let mut max_extra = 0usize;
+    for t in transitions {
+        if t.from != t.to {
+            continue;
+        }
+        let Some(label) = t.label.as_ref() else { continue };
+        let Some(layout) = id_to_layout.get(t.from.as_str()) else { continue };
+        let loop_x = layout.rect.x + layout.rect.w + 1;
+        let avail = canvas_width.saturating_sub(loop_x + 2).max(10);
+        let (_, n, _) = crate::text::wrap_label(label, avail);
+        // Label starts at rect.y and goes down n lines.
+        let label_bottom = layout.rect.y + n;
+        let extra = label_bottom.saturating_sub(layout.rect.bottom());
+        max_extra = max_extra.max(extra);
+    }
+    max_extra
 }
 
 // ── Label row computation ─────────────────────────────────────────────

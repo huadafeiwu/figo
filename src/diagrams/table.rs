@@ -5,7 +5,6 @@
 
 use std::fmt;
 
-use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
 use crate::canvas::Canvas;
@@ -283,26 +282,16 @@ impl fmt::Display for Table<'_> {
     }
 }
 
-/// Render a cell with the given column width and horizontal alignment,
-/// truncating long content and padding with spaces to fit exactly `width`.
+/// Render a cell with the given column width and horizontal alignment.
+/// Never truncates — if content exceeds width, it is written in full
+/// (the canvas will clip at its own boundary, but no characters are
+/// silently dropped from the cell text itself).
 fn aligned_cell(text: &str, width: usize, align: HAlign) -> String {
     let t_len = text.width();
     if t_len >= width {
-        let mut out = String::new();
-        let mut cur = 0usize;
-        for ch in text.chars() {
-            let w = ch.width().unwrap_or(0);
-            if cur + w > width {
-                break;
-            }
-            out.push(ch);
-            cur += w;
-        }
-        while cur < width {
-            out.push(' ');
-            cur += 1;
-        }
-        return out;
+        // Content is wider than the column — write it in full without
+        // truncation. The caller's canvas boundary handles clipping.
+        return text.to_string();
     }
     let pad = width - t_len;
     match align {

@@ -8,7 +8,6 @@ use std::collections::HashSet;
 
 use crate::canvas::{Canvas, Layer};
 use crate::style::BorderGlyphs;
-use crate::text::split_at_display_width;
 use unicode_width::UnicodeWidthStr;
 
 use super::Layout;
@@ -187,15 +186,13 @@ pub(super) fn write_centered_label(
     if inner_w == 0 {
         return;
     }
-    let total = name.width();
-    let (label, chars) = if total <= inner_w {
-        (name.to_string(), total)
-    } else {
-        let (truncated, _) = split_at_display_width(name, inner_w);
-        (truncated, inner_w)
-    };
-    let pad = (inner_w - chars) / 2;
-    canvas.put_str_layered(inner_left + pad, y, &label, Layer::NodeContent, None);
+    // Never truncate — wrap to multiple lines instead.
+    let (lines, _, _) = crate::text::wrap_label(name, inner_w.max(2));
+    for (i, line) in lines.iter().enumerate() {
+        let lw = unicode_width::UnicodeWidthStr::width(line.as_str());
+        let pad = inner_w.saturating_sub(lw) / 2;
+        canvas.put_str_layered(inner_left + pad, y + i, line, Layer::NodeContent, None);
+    }
 }
 
 /// Pick the right border glyph given wall directions and edge position.

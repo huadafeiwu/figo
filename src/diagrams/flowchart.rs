@@ -411,11 +411,18 @@ impl Flowchart {
                 }
             }
         }
-        // Centered label. For diamonds the label sits on the middle row;
-        // for rectangles on the single content row.
-        let lx = pos.rect.x + (pos.rect.w.saturating_sub(pos.node.label.width())) / 2;
-        let ly = pos.rect.y + pos.rect.h / 2;
-        canvas.put_str_layered(lx, ly, &pos.node.label, Layer::NodeContent, None);
+        // Centered label. Wrap to multiple lines if it doesn't fit the box.
+        let inner_w = pos.rect.w.saturating_sub(2).max(2);
+        let (label_lines, _, _) = crate::text::wrap_label(&pos.node.label, inner_w);
+        let num_lines = label_lines.len().max(1);
+        let start_y = pos.rect.y + (pos.rect.h.saturating_sub(num_lines)) / 2 + 1;
+        for (i, line) in label_lines.iter().enumerate() {
+            let lw = pos.node.label.width();
+            let line_w = unicode_width::UnicodeWidthStr::width(line.as_str());
+            let lx = pos.rect.x + (pos.rect.w.saturating_sub(line_w)) / 2;
+            canvas.put_str_layered(lx, start_y + i, line, Layer::NodeContent, None);
+            let _ = lw;
+        }
     }
 
     /// Compute the extra columns needed on the right for back-edge side
