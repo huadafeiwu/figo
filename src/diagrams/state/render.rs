@@ -276,63 +276,62 @@ fn shift_layouts(layouts: &mut [StateLayout], dy: usize) {
 /// Expand horizontal spacing so corridor between from and to states is wide
 /// enough to fit the transition label (with 2 cells of `---` on each side).
 /// Shifts the appropriate state in the direction that widens the corridor.
+/// Shifts are applied incrementally so each transition sees the updated
+/// layout from prior shifts (prevents corridor width miscalculation when
+/// one shift moves a state that is the `from` of a later transition).
 fn expand_corridors_for_labels(
     layouts: &mut [StateLayout],
     transitions: &[Transition],
     _params: &LayoutParams,
 ) {
-    let id_to_idx: HashMap<&str, usize> =
-        layouts.iter().enumerate().map(|(i, l)| (l.id.as_str(), i)).collect();
+    // Pre-resolve transition endpoints to indices so we don't hold an
+    // immutable borrow of `layouts` inside the mutable shift loop.
+    let resolved: Vec<(usize, usize, Option<String>)> = {
+        let id_to_idx: HashMap<&str, usize> =
+            layouts.iter().enumerate().map(|(i, l)| (l.id.as_str(), i)).collect();
+        transitions
+            .iter()
+            .filter_map(|t| {
+                if t.from == t.to {
+                    return None;
+                }
+                let from_idx = id_to_idx.get(t.from.as_str()).copied()?;
+                let to_idx = id_to_idx.get(t.to.as_str()).copied()?;
+                Some((from_idx, to_idx, t.label.clone()))
+            })
+            .collect()
+    };
 
-    // Collect expansion amounts per to_idx, along with the direction
-    // to shift (positive = right, negative = left).
-    let mut shifts: HashMap<usize, isize> = HashMap::new();
+    for (from_idx, to_idx, label_opt) in resolved {
+        let Some(text) = label_opt.as_ref() else { continue };
 
-    for t in transitions {
-        if t.from == t.to {
-            continue;
-        }
-        let Some(text) = t.label.as_ref() else { continue };
-        let Some(&from_idx) = id_to_idx.get(t.from.as_str()) else { continue };
-        let Some(&to_idx) = id_to_idx.get(t.to.as_str()) else { continue };
-        let lw = text.width();
+        // Recompute cx from the current (possibly already-shifted) layout.
         let from_cx = layouts[from_idx].rect.x + layouts[from_idx].rect.w / 2;
         let to_cx = layouts[to_idx].rect.x + layouts[to_idx].rect.w / 2;
         if from_cx == to_cx {
             continue;
         }
+        let lw = text.width();
         let corridor_w = from_cx.abs_diff(to_cx) + 1;
         let needed = lw + 4;
-        if needed > corridor_w {
-            let extra = (needed - corridor_w) as isize;
-            // Shift `to` away from `from` to widen the corridor.
-            let direction = if to_cx > from_cx { 1isize } else { -1 };
-            let shift = extra * direction;
-            let existing = shifts.get(&to_idx).copied().unwrap_or(0);
-            // If there's a conflict (same to shifted both directions),
-            // keep the larger absolute shift or overwrite a conflicting direction.
-            if shift.abs() > existing.abs() || existing * direction < 0 {
-                shifts.insert(to_idx, shift);
-            }
+        if needed <= corridor_w {
+            continue;
         }
-    }
 
-    if shifts.is_empty() {
-        return;
-    }
+        let extra = (needed - corridor_w) as isize;
+        let direction = if to_cx > from_cx { 1isize } else { -1 };
+        let shift = extra * direction;
 
-    // Apply shifts: for each state that needs to move, also move all
-    // states at the same y and in the same direction by the same amount.
-    for (idx, shift) in &shifts {
-        let y = layouts[*idx].rect.y;
-        let x = layouts[*idx].rect.x;
-        let s = *shift;
+        // Apply this shift immediately to the `to` state and all same-y
+        // peers in the shift direction.
+        let y = layouts[to_idx].rect.y;
+        let x = layouts[to_idx].rect.x;
         for layout in layouts.iter_mut() {
             if layout.rect.y != y {
                 continue;
             }
-            if s > 0 && layout.rect.x >= x || s < 0 && layout.rect.x <= x {
-                layout.rect.x = (layout.rect.x as isize + s).max(0) as usize;
+            if shift > 0 && layout.rect.x >= x || shift < 0 && layout.rect.x <= x {
+                layout.rect.x = (layout.rect.x as isize + shift).max(0) as usize;
             }
         }
     }
