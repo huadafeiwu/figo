@@ -97,7 +97,11 @@ impl<'a> Surface<'a> {
                 break;
             }
             self.put_layered(col, y, ch, layer);
-            col += UnicodeWidthChar::width(ch).unwrap_or(1);
+            let w = UnicodeWidthChar::width(ch).unwrap_or(1);
+            if w == 2 && col + 1 < self.clip_w {
+                self.put_layered(col + 1, y, ' ', layer);
+            }
+            col += w;
         }
     }
 

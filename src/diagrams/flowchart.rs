@@ -258,7 +258,13 @@ impl Flowchart {
         for layer_indices in &layer_positions {
             let total_w: usize = layer_indices.iter().map(|&idx| dims[idx].0).sum::<usize>()
                 + layer_indices.len().saturating_sub(1) * 6;
-            let start_x = self.width.saturating_sub(total_w) / 2;
+            // Single-node layers align to global canvas center so that
+            // vertical connectors between layers stay in the same column.
+            let start_x = if layer_indices.len() == 1 {
+                self.width / 2 - (dims[layer_indices[0]].0 / 2)
+            } else {
+                self.width.saturating_sub(total_w) / 2
+            };
             let mut x = start_x;
             let max_h = layer_indices.iter().map(|&idx| dims[idx].1).max().unwrap_or(0);
             for &idx in layer_indices {

@@ -110,7 +110,11 @@ impl Canvas {
         let mut col = x;
         for ch in s.chars() {
             self.put_layered(col, y, ch, layer, fg);
-            col += UnicodeWidthChar::width(ch).unwrap_or(1);
+            let w = UnicodeWidthChar::width(ch).unwrap_or(1);
+            if w == 2 {
+                self.put_layered(col + 1, y, ' ', layer, fg);
+            }
+            col += w;
         }
     }
 
