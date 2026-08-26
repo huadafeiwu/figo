@@ -252,10 +252,38 @@ impl Flowchart {
             }
         }
 
+        // Pre-compute the maximum number of wrapped label lines for each
+        // layer gap, so the vertical stride can grow to fit them.
+        let id_to_idx: HashMap<&str, usize> =
+            self.nodes.iter().enumerate().map(|(i, n)| (n.id.as_str(), i)).collect();
+        let id_to_layer: HashMap<usize, usize> =
+            self.nodes.iter().enumerate().map(|(i, _)| (i, layers[i])).collect();
+        let mut max_label_lines_per_gap: HashMap<usize, usize> = HashMap::new();
+        for conn in &self.connections {
+            let (Some(&from_idx), Some(&to_idx)) =
+                (id_to_idx.get(conn.from.as_str()), id_to_idx.get(conn.to.as_str()))
+            else {
+                continue;
+            };
+            let is_back = id_to_layer.get(&from_idx).copied().unwrap_or(0)
+                >= id_to_layer.get(&to_idx).copied().unwrap_or(0);
+            if is_back {
+                continue;
+            }
+            if let Some(label) = &conn.label {
+                let avail = (self.width / 2).clamp(10, 40);
+                let (_, n, _) = crate::text::wrap_label(label, avail);
+                let from_layer = id_to_layer.get(&from_idx).copied().unwrap_or(0);
+                let to_layer = id_to_layer.get(&to_idx).copied().unwrap_or(0);
+                let gap = to_layer.min(from_layer) + 1;
+                max_label_lines_per_gap.entry(gap).and_modify(|v| *v = (*v).max(n)).or_insert(n);
+            }
+        }
+
         let mut y = 1usize;
         let mut out: Vec<Option<PositionedNode>> = vec![None; self.nodes.len()];
 
-        for layer_indices in &layer_positions {
+        for (layer_i, layer_indices) in layer_positions.iter().enumerate() {
             let total_w: usize = layer_indices.iter().map(|&idx| dims[idx].0).sum::<usize>()
                 + layer_indices.len().saturating_sub(1) * 6;
             // Single-node layers align to global canvas center so that
@@ -275,19 +303,51 @@ impl Flowchart {
                 });
                 x += w + 6;
             }
-            y += max_h + AUTO_STRIDE_ROWS;
+            // Grow the stride if labels in this gap need more rows.
+            let label_lines = max_label_lines_per_gap.get(&layer_i).copied().unwrap_or(0).max(1);
+            let stride = AUTO_STRIDE_ROWS.max(label_lines + 2);
+            y += max_h + stride;
         }
 
         Ok(out.into_iter().map(Option::unwrap).collect())
     }
 
     fn render_positions(&self, positions: &[PositionedNode]) -> Result<String> {
+        let pos_map: HashMap<&str, &PositionedNode> =
+            positions.iter().map(|p| (p.node.id.as_str(), p)).collect();
+        let all_rects: Vec<Rect> = positions.iter().map(|p| p.rect).collect();
+
         let max_w = positions.iter().map(|p| p.rect.right()).max().unwrap_or(0).max(self.width);
         // Reserve room on the right for back-edge side corridors and labels.
         let side_room = self.side_room_for_back_edges(positions);
-        let max_h =
-            positions.iter().map(|p| p.rect.bottom()).max().unwrap_or(10) + 2 + AUTO_STRIDE_ROWS;
-        let mut canvas = Canvas::new(max_w + side_room, max_h);
+
+        // Also account for forward-edge labels that may extend past node
+        // edges. A vertical connector's label sits at sx+1 and can be as
+        // wide as the label text.
+        let mut label_extra_w = 0usize;
+        for conn in &self.connections {
+            if let (Some(&from), Some(&to)) =
+                (pos_map.get(conn.from.as_str()), pos_map.get(conn.to.as_str()))
+            {
+                let is_back = from.rect.y >= to.rect.y;
+                if is_back {
+                    continue;
+                }
+                if let Some(label) = &conn.label {
+                    let lw = label.width();
+                    let src_cx = from.rect.cx();
+                    let label_right = src_cx + 1 + lw;
+                    label_extra_w = label_extra_w.max(label_right);
+                }
+            }
+        }
+        let total_w = (max_w + side_room).max(label_extra_w + 2);
+
+        let max_h = positions.iter().map(|p| p.rect.bottom()).max().unwrap_or(10)
+            + 2
+            + AUTO_STRIDE_ROWS
+            + 4;
+        let mut canvas = Canvas::new(total_w, max_h);
 
         // Phase 1 — node borders and labels.
         for pos in positions {
@@ -295,9 +355,6 @@ impl Flowchart {
         }
 
         // Phase 2 — connectors.
-        let pos_map: HashMap<&str, &PositionedNode> =
-            positions.iter().map(|p| (p.node.id.as_str(), p)).collect();
-        let all_rects: Vec<Rect> = positions.iter().map(|p| p.rect).collect();
         for conn in &self.connections {
             let (Some(&from), Some(&to)) =
                 (pos_map.get(conn.from.as_str()), pos_map.get(conn.to.as_str()))
@@ -643,5 +700,28 @@ mod tests {
             .connect("a", "b", None);
         let out = fc.build().unwrap();
         assert!(out.contains('↓'), "expected downward arrowhead ↓:\n{out}");
+    }
+
+    #[test]
+    fn test_long_forward_edge_label_wraps() {
+        let long_label = "开始执行驱动注册流程并等待总线回调返回结果";
+        let fc = Flowchart::new(80, Charset::Unicode)
+            .add_node(FlowNode {
+                id: "a".into(),
+                label: "Start".into(),
+                shape: NodeShape::Rounded,
+                position: None,
+            })
+            .add_node(FlowNode {
+                id: "b".into(),
+                label: "End".into(),
+                shape: NodeShape::Rounded,
+                position: None,
+            })
+            .connect("a", "b", Some(long_label));
+        let out = fc.build().unwrap();
+        for ch in long_label.chars() {
+            assert!(out.contains(ch), "label char '{ch}' missing:\n{out}");
+        }
     }
 }

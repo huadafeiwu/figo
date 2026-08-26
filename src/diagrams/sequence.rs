@@ -107,18 +107,6 @@ impl<'a> SequenceDiagram<'a> {
             ));
         }
 
-        // Vertical layout:
-        //   row 0                header top border
-        //   row 1                header name row
-        //   row 2                header bottom border + tee-junction into lifeline
-        //   rows 3..total_height lifelines (Layer::Connector) interleaved with messages
-        let header_height: usize = 3;
-        let msg_spacing: usize = 3;
-        let msg_rows = self.messages.len() * msg_spacing;
-        let total_height = header_height + msg_rows + 1;
-
-        let mut canvas = Canvas::new(actual_width, total_height);
-
         let name_to_idx: HashMap<&str, usize> =
             self.participants.iter().enumerate().map(|(i, &p)| (p, i)).collect();
 
@@ -127,6 +115,47 @@ impl<'a> SequenceDiagram<'a> {
         // box width parity.
         let lifeline_x_for =
             |i: usize| -> usize { i * lane_width + LANE_GAP_HALF + (box_width - 1) / 2 };
+
+        // Vertical layout:
+        //   row 0                header top border
+        //   row 1                header name row
+        //   row 2                header bottom border + tee-junction into lifeline
+        //   rows 3..total_height lifelines (Layer::Connector) interleaved with messages
+        let header_height: usize = 3;
+
+        // Pre-compute label line counts per message so we can size the
+        // canvas and compute each message's arrow_y dynamically.
+        let inner_w_for = |from_idx: usize, to_idx: usize| -> usize {
+            let from_x = lifeline_x_for(from_idx);
+            let to_x = lifeline_x_for(to_idx);
+            let left_x = from_x.min(to_x);
+            let right_x = from_x.max(to_x);
+            let inner_left = left_x + 1;
+            let inner_right = right_x.saturating_sub(1);
+            inner_right.saturating_sub(inner_left) + 1
+        };
+
+        let msg_heights: Vec<usize> = self
+            .messages
+            .iter()
+            .map(|msg| {
+                let from_idx = name_to_idx.get(msg.from.as_str()).copied().unwrap_or(0);
+                let to_idx = name_to_idx.get(msg.to.as_str()).copied().unwrap_or(0);
+                if from_idx == to_idx {
+                    let avail = (self.width / 2).clamp(10, 40);
+                    let (_, n, _) = crate::text::wrap_label(&msg.label, avail);
+                    n.max(1) + 3
+                } else {
+                    let inner_w = inner_w_for(from_idx, to_idx).max(2);
+                    let (_, n, _) = crate::text::wrap_label(&msg.label, inner_w);
+                    n.max(1) + 2
+                }
+            })
+            .collect();
+        let msg_rows: usize = msg_heights.iter().sum();
+        let total_height = header_height + msg_rows + 1;
+
+        let mut canvas = Canvas::new(actual_width, total_height);
 
         // Paint pass 1: lifelines at Layer::Connector (low) drawn FIRST so
         // they extend from the header bottom down to the canvas bottom.
@@ -160,17 +189,28 @@ impl<'a> SequenceDiagram<'a> {
         // sees TWO 1×1 invisible rects at the lifeline columns; the
         // straight horizontal path is the arrow body and the arrowhead sits
         // one cell outside the target lifeline (at Layer::ConnectorEnd).
+        let mut msg_y = header_height + 1;
         for (mi, msg) in self.messages.iter().enumerate() {
             let from_idx = name_to_idx.get(msg.from.as_str()).copied().unwrap_or(0);
             let to_idx = name_to_idx.get(msg.to.as_str()).copied().unwrap_or(0);
             let from_x = lifeline_x_for(from_idx);
             let to_x = lifeline_x_for(to_idx);
-            let arrow_y = header_height + 1 + mi * msg_spacing;
-            let label_y = arrow_y.saturating_sub(1);
+            let msg_h = msg_heights[mi];
+            let arrow_y = msg_y;
+            let label_lines = if from_idx == to_idx {
+                let avail = (self.width / 2).clamp(10, 40);
+                let (lines, _, _) = crate::text::wrap_label(&msg.label, avail);
+                lines
+            } else {
+                let inner_w = inner_w_for(from_idx, to_idx).max(2);
+                let (lines, _, _) = crate::text::wrap_label(&msg.label, inner_w);
+                lines
+            };
+            let num_lines = label_lines.len().max(1);
 
             if from_x == to_x {
                 // Self-message: small loop to the right of the lifeline.
-                Self::draw_self_message(&mut canvas, from_x, arrow_y, v_ch, &msg.label);
+                Self::draw_self_message(&mut canvas, from_x, arrow_y, v_ch, &label_lines);
             } else {
                 let (left_x, right_x, left_to_right) =
                     if from_x < to_x { (from_x, to_x, true) } else { (to_x, from_x, false) };
@@ -202,20 +242,21 @@ impl<'a> SequenceDiagram<'a> {
                 canvas.put_layered(from_x, arrow_y, v_ch, Layer::Connector, None);
                 canvas.put_layered(to_x, arrow_y, v_ch, Layer::Connector, None);
 
-                // Label clamped to the gap between the two lifelines so it
-                // never overlaps a lifeline column. One cell of margin on
-                // each side keeps the label flush within the empty space.
+                // Label wrapped to the gap between the two lifelines so it
+                // never overlaps a lifeline column.
                 let inner_left = left_x + 1;
                 let inner_right = right_x.saturating_sub(1);
-                let label_w = msg.label.width();
                 let inner_w = inner_right.saturating_sub(inner_left) + 1;
-                let label_x = if label_w <= inner_w {
-                    inner_left + (inner_w - label_w) / 2
-                } else {
-                    inner_left
-                };
-                canvas.put_str_layered(label_x, label_y, &msg.label, Layer::Label, None);
+                for (i, line) in label_lines.iter().enumerate() {
+                    let lw = unicode_width::UnicodeWidthStr::width(line.as_str());
+                    let label_x =
+                        if lw <= inner_w { inner_left + (inner_w - lw) / 2 } else { inner_left };
+                    let ly = arrow_y.saturating_sub(num_lines).saturating_add(i);
+                    canvas.put_str_layered(label_x, ly, line, Layer::Label, None);
+                }
             }
+
+            msg_y += msg_h;
         }
 
         // Repair connector junctions so corners and crossings use proper
@@ -236,7 +277,7 @@ impl<'a> SequenceDiagram<'a> {
         from_x: usize,
         arrow_y: usize,
         v_ch: char,
-        label: &str,
+        label_lines: &[String],
     ) {
         let is_unicode = v_ch == '│';
         let corner_top_right = if is_unicode { '┐' } else { '+' };
@@ -250,8 +291,10 @@ impl<'a> SequenceDiagram<'a> {
         canvas.put_layered(loop_bot_x, arrow_y + 2, corner_bot_right, Layer::Connector, None);
         canvas.put_layered(from_x, arrow_y + 2, '<', Layer::ConnectorEnd, None);
         canvas.put_horizontal_layered(from_x + 1, arrow_y + 2, 2, h_ch, Layer::Connector);
-        // Label to the right of the loop, on the same row as the loop top.
-        canvas.put_str_layered(loop_top_x + 2, arrow_y, label, Layer::Label, None);
+        // Multi-line label to the right of the loop.
+        for (i, line) in label_lines.iter().enumerate() {
+            canvas.put_str_layered(loop_top_x + 2, arrow_y + i, line, Layer::Label, None);
+        }
     }
 
     /// Eastward arrowhead glyph for the given charset.
@@ -293,6 +336,19 @@ mod tests {
         assert!(out.contains("Client"));
         assert!(out.contains("Server"));
         assert!(out.contains("GET /api"));
+    }
+
+    #[test]
+    fn test_long_message_label_wraps() {
+        let long_label = "write系统调用写入数据到文件描述符并等待缓冲区刷新完成";
+        let sd = SequenceDiagram::new(60, Charset::Ascii)
+            .add_participant("用户进程")
+            .add_participant("内核VFS")
+            .add_message("用户进程", "内核VFS", long_label);
+        let out = sd.build().unwrap();
+        for ch in long_label.chars() {
+            assert!(out.contains(ch), "label char '{ch}' missing:\n{out}");
+        }
     }
 
     #[test]

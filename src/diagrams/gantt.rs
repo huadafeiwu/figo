@@ -98,9 +98,39 @@ impl GanttChart {
         let col_per_unit = chart_width / self.total_units.max(1);
         let chart_width = col_per_unit * self.total_units;
 
-        let task_count: usize = self.sections.iter().map(|s| s.tasks.len()).sum();
-        let section_count: usize = self.sections.iter().filter(|s| !s.label.is_empty()).count();
-        let total_rows = task_count + section_count;
+        // Pre-compute wrapped labels so we know how many rows each entry
+        // occupies. label_width - 2 reserves room for the indent prefix
+        // ("  " on tasks inside a section) plus 1 cell of left margin.
+        let inner_label_w = label_width.saturating_sub(2);
+        let chart_start = label_width + 2;
+
+        struct RowEntry {
+            label_lines: Vec<String>,
+            #[allow(dead_code)]
+            is_section: bool,
+            task: Option<GanttTask>,
+        }
+
+        let mut entries: Vec<RowEntry> = Vec::new();
+        let mut total_rows = 0usize;
+        for section in &self.sections {
+            if !section.label.is_empty() {
+                let (lines, _, _) = crate::text::wrap_label(&section.label, inner_label_w);
+                total_rows += lines.len().max(1);
+                entries.push(RowEntry { label_lines: lines, is_section: true, task: None });
+            }
+            for task in &section.tasks {
+                let indent = if section.label.is_empty() { "" } else { "  " };
+                let avail = inner_label_w.saturating_sub(if indent.is_empty() { 0 } else { 2 });
+                let (lines, _, _) = crate::text::wrap_label(&task.name, avail);
+                total_rows += lines.len().max(1);
+                entries.push(RowEntry {
+                    label_lines: lines,
+                    is_section: false,
+                    task: Some(task.clone()),
+                });
+            }
+        }
         let total_height = total_rows + 4; // header + tasks + borders
 
         let display_w = label_width + 2 + chart_width;
@@ -118,7 +148,6 @@ impl GanttChart {
         // column is wide enough to hold the digits without overlap. When the
         // chart is cramped (col_per_unit is small) we draw tick marks and
         // every Nth label so headers remain readable.
-        let chart_start = label_width + 2;
         let label_step = if col_per_unit >= 3 {
             1
         } else if col_per_unit >= 2 {
@@ -143,17 +172,27 @@ impl GanttChart {
         // Separator under header
         canvas.put_horizontal(chart_start, 2, chart_width, glyphs.horizontal);
 
-        // Draw tasks
+        // Draw tasks and section labels
         let mut row = 3;
-        for section in &self.sections {
-            if !section.label.is_empty() {
-                canvas.put_str(1, row, &section.label);
-                row += 1;
-            }
-            for task in &section.tasks {
-                let indent = if section.label.is_empty() { "" } else { "  " };
-                canvas.put_str(1, row, &format!("{indent}{}", task.name));
+        for entry in &entries {
+            let label_lines = if entry.label_lines.is_empty() {
+                vec![String::new()]
+            } else {
+                entry.label_lines.clone()
+            };
 
+            // Draw each wrapped line, padding to label_width so long labels
+            // never overflow into the chart area or overwrite the separator.
+            for (i, line) in label_lines.iter().enumerate() {
+                let lw = unicode_width::UnicodeWidthStr::width(line.as_str());
+                let pad = label_width.saturating_sub(lw + 1);
+                let padded = format!("{}{}", line, " ".repeat(pad));
+                canvas.put_str(1, row + i, &padded);
+            }
+            let lines_drawn = label_lines.len();
+
+            // Draw the task bar on the first line of the label.
+            if let Some(task) = &entry.task {
                 let bar_start = chart_start + task.start * col_per_unit;
                 let bar_len = (task.duration * col_per_unit).max(1);
 
@@ -180,9 +219,9 @@ impl GanttChart {
                         canvas.put(bar_start + i, row, ch);
                     }
                 }
-
-                row += 1;
             }
+
+            row += lines_drawn;
         }
 
         // Today marker
@@ -213,6 +252,7 @@ impl fmt::Display for GanttChart {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use unicode_width::UnicodeWidthStr;
 
     #[test]
     fn test_simple_gantt() {
@@ -240,5 +280,36 @@ mod tests {
         let out = gc.build().unwrap();
         assert!(out.contains("Sprint 1"));
         assert!(out.contains("Task A"));
+    }
+
+    #[test]
+    fn test_long_task_label_wraps_and_stays_in_column() {
+        let long_name = "这是一个非常非常长的任务名称超过四十个字符需要换行处理的任务";
+        let gc = GanttChart::new(80, Charset::Ascii, TimeUnit::Day, 14).add_section(GanttSection {
+            label: "Sprint".into(),
+            tasks: vec![GanttTask {
+                name: long_name.into(),
+                start: 0,
+                duration: 5,
+                progress: 100,
+                milestone: false,
+                depends_on: None,
+            }],
+        });
+        let out = gc.build().unwrap();
+        // Every character must appear somewhere in the output.
+        for ch in long_name.chars() {
+            assert!(out.contains(ch), "label char '{ch}' missing:\n{out}");
+        }
+        // No line should have the label overflowing past the chart separator.
+        // The separator is at column label_width + 1 = 21 (for width=80).
+        let lines: Vec<&str> = out.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if i < 2 || i >= lines.len() - 1 {
+                continue; // skip header and bottom border
+            }
+            let w = UnicodeWidthStr::width(*line);
+            assert!(w <= 82, "line {i} too wide ({w} cols):\n{out}");
+        }
     }
 }

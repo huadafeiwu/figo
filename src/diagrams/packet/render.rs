@@ -123,6 +123,7 @@ pub(super) fn draw_bottom_row(
 
 /// Render a middle row: vertical walls at each field boundary and the
 /// centered field name (truncated without ellipsis if too long).
+#[allow(dead_code)]
 pub(super) fn draw_middle_row(
     canvas: &mut Canvas,
     y: usize,
@@ -141,6 +142,38 @@ pub(super) fn draw_middle_row(
     // full 32 bits (no span ends at bit 32, so packet_right is never drawn).
     canvas.put_layered(layout.packet_left, y, glyphs.vertical, Layer::NodeBorder, None);
     canvas.put_layered(layout.packet_right, y, glyphs.vertical, Layer::NodeBorder, None);
+}
+
+/// Render a middle row with multi-line wrapped labels. Each span gets as
+/// many rows as its wrapped label needs. Returns the number of rows drawn.
+pub(super) fn draw_middle_row_wrapped(
+    canvas: &mut Canvas,
+    y: usize,
+    layout: Layout,
+    spans: &[WordSpan],
+    glyphs: &BorderGlyphs,
+    label_lines: &[Vec<String>],
+) -> usize {
+    let max_lines = label_lines.iter().map(|l| l.len()).max().unwrap_or(1).max(1);
+    for row_i in 0..max_lines {
+        let ry = y + row_i;
+        for (span_idx, span) in spans.iter().enumerate() {
+            let fl = wall_left(layout, span.bit_in_word);
+            let fr = wall_right(layout, span.bit_in_word, span.bits);
+            canvas.put_layered(fl, ry, glyphs.vertical, Layer::NodeBorder, None);
+            canvas.put_layered(fr, ry, glyphs.vertical, Layer::NodeBorder, None);
+
+            if let Some(lines) = label_lines.get(span_idx) {
+                if let Some(line) = lines.get(row_i) {
+                    let inner_w = fr.saturating_sub(fl + 1);
+                    write_centered_label(canvas, ry, fl + 1, inner_w, line);
+                }
+            }
+        }
+        canvas.put_layered(layout.packet_left, ry, glyphs.vertical, Layer::NodeBorder, None);
+        canvas.put_layered(layout.packet_right, ry, glyphs.vertical, Layer::NodeBorder, None);
+    }
+    max_lines
 }
 
 /// Drop the field name centered into the interior columns.

@@ -13,9 +13,7 @@ use crate::canvas::Canvas;
 use crate::error::{FigoError, Result};
 use crate::style::{BorderStyle, Charset};
 
-use render::{
-    draw_border_row, draw_bottom_row, draw_middle_row, draw_scale, split_per_word, walls_for_spans,
-};
+use render::split_per_word;
 
 /// A single field in a packet header.
 #[derive(Debug, Clone)]
@@ -71,15 +69,52 @@ impl PacketDiagram {
 
     /// Render and return as a `String`.
     pub fn build(&self) -> Result<String> {
+        use render::draw_middle_row_wrapped;
+
         let layout = validate(self.width, &self.fields)?;
         let glyphs = BorderStyle::Single.glyphs(self.charset);
         let total_bits: usize = self.fields.iter().map(|f| f.bits).sum();
         let words = total_bits.div_ceil(32);
-        let mut canvas = Canvas::new(self.width, 2 + 2 * words);
 
-        draw_scale(&mut canvas, layout);
+        // Pre-compute wrapped labels for each word's spans so we know how
+        // many rows each word's middle section needs.
         let word_spans = split_per_word(&self.fields);
-        let word_walls: Vec<_> = word_spans.iter().map(|s| walls_for_spans(layout, s)).collect();
+        let wrapped_per_word: Vec<Vec<Vec<String>>> = word_spans
+            .iter()
+            .map(|spans| {
+                spans
+                    .iter()
+                    .map(|span| {
+                        let fl = render::wall_left(layout, span.bit_in_word);
+                        let fr = render::wall_right(layout, span.bit_in_word, span.bits);
+                        let inner_w = fr.saturating_sub(fl + 1);
+                        if inner_w < 2 {
+                            // Too narrow to wrap — fall back to truncation.
+                            let (truncated, _) =
+                                crate::text::split_at_display_width(&span.name, inner_w);
+                            vec![truncated]
+                        } else {
+                            let (lines, _, _) = crate::text::wrap_label(&span.name, inner_w);
+                            if lines.is_empty() { vec![String::new()] } else { lines }
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+
+        let word_walls: Vec<_> =
+            word_spans.iter().map(|s| render::walls_for_spans(layout, s)).collect();
+
+        // Canvas height: row 0 (scale) + per-word (border row + middle rows)
+        // + 1 (bottom border).
+        let middle_heights: Vec<usize> = wrapped_per_word
+            .iter()
+            .map(|spans| spans.iter().map(|l| l.len()).max().unwrap_or(1).max(1))
+            .collect();
+        let total_h = 1 + middle_heights.iter().map(|&h| 1 + h).sum::<usize>() + 1;
+        let mut canvas = Canvas::new(self.width, total_h);
+
+        render::draw_scale(&mut canvas, layout);
 
         for word_idx in 0..words {
             let (Some(spans_below), Some(walls_below)) =
@@ -88,12 +123,36 @@ impl PacketDiagram {
                 continue;
             };
             let walls_above = word_idx.checked_sub(1).and_then(|i| word_walls.get(i));
-            let y_border = 1 + 2 * word_idx;
+            let y_border = if word_idx == 0 {
+                1
+            } else {
+                1 + middle_heights[..word_idx].iter().map(|&h| 1 + h).sum::<usize>()
+            };
             let y_middle = y_border + 1;
-            draw_border_row(&mut canvas, y_border, layout, walls_below, walls_above, &glyphs);
-            draw_middle_row(&mut canvas, y_middle, layout, spans_below, &glyphs);
+            render::draw_border_row(
+                &mut canvas,
+                y_border,
+                layout,
+                walls_below,
+                walls_above,
+                &glyphs,
+            );
+            let drawn = draw_middle_row_wrapped(
+                &mut canvas,
+                y_middle,
+                layout,
+                spans_below,
+                &glyphs,
+                &wrapped_per_word[word_idx],
+            );
             if word_idx + 1 == words {
-                draw_bottom_row(&mut canvas, y_border + 2, layout, walls_below, &glyphs);
+                render::draw_bottom_row(
+                    &mut canvas,
+                    y_middle + drawn,
+                    layout,
+                    walls_below,
+                    &glyphs,
+                );
             }
         }
         Ok(canvas.render(self.color))
@@ -254,6 +313,20 @@ mod tests {
         let fields = vec![PacketField { name: "TypeOfService".into(), bits: 8 }];
         let out = draw_packet(&fields, 80, Charset::Ascii).unwrap();
         assert!(!out.contains("..."), "no ellipsis allowed: {out:?}");
+    }
+
+    #[test]
+    fn test_long_field_name_wraps() {
+        let long_name = "这是一个非常长的字段名称超过四十个字符需要换行处理的内容";
+        let fields = vec![
+            PacketField { name: long_name.to_string(), bits: 16 },
+            PacketField { name: "Short".into(), bits: 16 },
+        ];
+        let out = draw_packet(&fields, 80, Charset::Ascii).unwrap();
+        // Every character must appear somewhere in the output.
+        for ch in long_name.chars() {
+            assert!(out.contains(ch), "field name char '{ch}' missing:\n{out}");
+        }
     }
 
     #[test]

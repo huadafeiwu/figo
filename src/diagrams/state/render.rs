@@ -99,7 +99,6 @@ impl<'a> StateDiagram<'a> {
         // Ensure canvas is wide enough for all transition labels.
         for (idx, t) in self.transitions.iter().enumerate() {
             let Some(text) = t.label.as_ref() else { continue };
-            let lw = text.width();
             let Some(from) = id_to_layout.get(&t.from) else { continue };
             let Some(to) = id_to_layout.get(&t.to) else { continue };
             let from_cx = from.rect.x + from.rect.w / 2;
@@ -109,6 +108,13 @@ impl<'a> StateDiagram<'a> {
             let fwd = from.rect.y < to.rect.y;
             let base_x =
                 if row > 0 { if fwd { from_cx } else { to_cx } } else { (from_cx + to_cx) / 2 };
+            // Use the wrapped max line width (not the full label width) for
+            // sizing, since long labels are now wrapped to corridor width.
+            let corridor_w =
+                if from_cx != to_cx { from_cx.abs_diff(to_cx) + 1 } else { self.width };
+            let avail = corridor_w.max(10);
+            let (_, _, max_lw) = crate::text::wrap_label(text, avail);
+            let lw = max_lw;
             let lx = base_x.saturating_sub(lw / 2);
             total_w = total_w.max(lx + lw);
         }
@@ -168,7 +174,9 @@ fn compute_canvas_height(
     max_label_row: usize,
 ) -> usize {
     let bottommost = layouts.iter().map(|l| l.rect.bottom()).max().unwrap_or(0);
-    bottommost + params.gap_y * 2 + max_label_row * 2
+    // Account for multi-line labels: each row adds 2 rows, and each
+    // label may wrap into multiple lines. Use a generous estimate.
+    bottommost + params.gap_y * 2 + max_label_row * 2 + 6
 }
 
 // ── Label row computation ─────────────────────────────────────────────
@@ -266,8 +274,8 @@ fn shift_layouts(layouts: &mut [StateLayout], dy: usize) {
 }
 
 /// Expand horizontal spacing so corridor between from and to states is wide
-/// enough to fit the transition label (with 1 cell of `---` on each side).
-/// Only pushes the `to` state and its same-layer rightward peers rightward.
+/// enough to fit the transition label (with 2 cells of `---` on each side).
+/// Shifts the appropriate state in the direction that widens the corridor.
 fn expand_corridors_for_labels(
     layouts: &mut [StateLayout],
     transitions: &[Transition],
@@ -276,9 +284,9 @@ fn expand_corridors_for_labels(
     let id_to_idx: HashMap<&str, usize> =
         layouts.iter().enumerate().map(|(i, l)| (l.id.as_str(), i)).collect();
 
-    // Collect expansion amounts per (from_idx, to_idx) pair.
-    // We process transitions in order, accumulating shifts.
-    let mut shifts: HashMap<usize, usize> = HashMap::new(); // to_idx -> extra x
+    // Collect expansion amounts per to_idx, along with the direction
+    // to shift (positive = right, negative = left).
+    let mut shifts: HashMap<usize, isize> = HashMap::new();
 
     for t in transitions {
         if t.from == t.to {
@@ -290,17 +298,22 @@ fn expand_corridors_for_labels(
         let lw = text.width();
         let from_cx = layouts[from_idx].rect.x + layouts[from_idx].rect.w / 2;
         let to_cx = layouts[to_idx].rect.x + layouts[to_idx].rect.w / 2;
-        // Skip same-column transitions (no horizontal corridor; label
-        // overflows into empty gap space which is safe).
         if from_cx == to_cx {
             continue;
         }
         let corridor_w = from_cx.abs_diff(to_cx) + 1;
-        let needed = lw + 4; // label + 1 cell --- and 1 cell + on each side
+        let needed = lw + 4;
         if needed > corridor_w {
-            let extra = needed - corridor_w;
+            let extra = (needed - corridor_w) as isize;
+            // Shift `to` away from `from` to widen the corridor.
+            let direction = if to_cx > from_cx { 1isize } else { -1 };
+            let shift = extra * direction;
             let existing = shifts.get(&to_idx).copied().unwrap_or(0);
-            shifts.insert(to_idx, existing.max(extra));
+            // If there's a conflict (same to shifted both directions),
+            // keep the larger absolute shift or overwrite a conflicting direction.
+            if shift.abs() > existing.abs() || existing * direction < 0 {
+                shifts.insert(to_idx, shift);
+            }
         }
     }
 
@@ -308,14 +321,18 @@ fn expand_corridors_for_labels(
         return;
     }
 
-    // Apply shifts: for each state that needs to move right, also move all
-    // states at the same y and to its right by the same amount.
-    for (idx, extra) in &shifts {
+    // Apply shifts: for each state that needs to move, also move all
+    // states at the same y and in the same direction by the same amount.
+    for (idx, shift) in &shifts {
         let y = layouts[*idx].rect.y;
         let x = layouts[*idx].rect.x;
+        let s = *shift;
         for layout in layouts.iter_mut() {
-            if layout.rect.y == y && layout.rect.x >= x {
-                layout.rect.x += extra;
+            if layout.rect.y != y {
+                continue;
+            }
+            if s > 0 && layout.rect.x >= x || s < 0 && layout.rect.x <= x {
+                layout.rect.x = (layout.rect.x as isize + s).max(0) as usize;
             }
         }
     }
@@ -331,7 +348,9 @@ fn compute_gap_expansion(
     let id_to_layout: HashMap<&str, &StateLayout> =
         layouts.iter().map(|l| (l.id.as_str(), l)).collect();
 
-    let mut gap_max_row: HashMap<(usize, usize, usize, usize), usize> = HashMap::new();
+    // Track max (row + num_lines) per gap — the vertical space needed is
+    // determined by how many rows of multi-line labels stack up.
+    let mut gap_max_extent: HashMap<(usize, usize, usize, usize), usize> = HashMap::new();
 
     for (idx, t) in transitions.iter().enumerate() {
         if t.from == t.to {
@@ -347,14 +366,29 @@ fn compute_gap_expansion(
         } else {
             (to.rect.y, from.rect.y, to_cx, from_cx)
         };
-        gap_max_row.entry(gap_key).and_modify(|r| *r = (*r).max(row)).or_insert(row);
+
+        // Estimate the label's line count for wrapping.
+        let num_lines = if let Some(text) = &t.label {
+            let corridor_w = if from_cx != to_cx { from_cx.abs_diff(to_cx) + 1 } else { 80 };
+            let avail = corridor_w.max(10);
+            let (_, n, _) = crate::text::wrap_label(text, avail);
+            n
+        } else {
+            1
+        };
+
+        // The vertical extent needed is row * 2 (spacing between rows) +
+        // num_lines (the label block itself).
+        let extent = row * 2 + num_lines;
+        gap_max_extent.entry(gap_key).and_modify(|r| *r = (*r).max(extent)).or_insert(extent);
     }
 
-    // Extra rows needed: each row beyond 0 needs 2 extra rows in the gap.
+    // Extra rows needed: the extent minus what's already available (1 row
+    // for the corridor itself).
     let mut expansion = HashMap::new();
-    for (key, max_row) in gap_max_row {
-        if max_row > 0 {
-            expansion.insert(key, max_row * 2);
+    for (key, extent) in gap_max_extent {
+        if extent > 1 {
+            expansion.insert(key, extent * 2);
         }
     }
     expansion
@@ -581,42 +615,65 @@ fn draw_external_transition(
     // row 0: label sits on route_y (the corridor/line itself).
     // row > 0: label sits above to avoid x overlap with another label.
     if let Some(text) = label {
-        let lw = text.width();
+        use crate::text::wrap_label;
+
+        // Determine available width for wrapping.
+        let avail = if right_x > left_x {
+            (right_x - left_x + 1).max(10)
+        } else {
+            // Same-column: use remaining canvas width to the right.
+            surface.width().saturating_sub(from_cx + 2).max(10)
+        };
+
+        let (lines, num_lines, _) = wrap_label(text, avail);
+
         // row 0: label on corridor (center of from_cx/to_cx).
         // row>0: label on the vertical leg that exists above route_y:
         //   forward → from-leg (from_cx), reverse → to-leg (to_cx).
         let base_x =
             if row > 0 { if forward { from_cx } else { to_cx } } else { (from_cx + to_cx) / 2 };
-        let mut label_x = base_x.saturating_sub(lw / 2);
-        label_x = label_x.min(surface.width().saturating_sub(lw));
-        // Corridor clamping only when label is on the corridor (row 0).
-        if row == 0 && right_x > left_x && lw < right_x - left_x + 1 {
-            label_x = label_x.max(left_x).min(right_x + 1 - lw);
-        }
-        let label_y = if row == 0 { route_y } else { route_y.saturating_sub(row * 2) };
-        surface.put_str_layered(label_x, label_y, text, Layer::Label);
 
-        // Restore corridor line on both sides of the label so it stays
-        // connected (label only replaces the segment it occupies).
-        if label_y == route_y && right_x > left_x {
-            let label_end = label_x + text.width();
-            if label_x > left_x {
-                surface.put_horizontal(
-                    left_x,
-                    route_y,
-                    label_x - left_x,
-                    glyphs.horizontal,
-                    Layer::Connector,
-                );
+        // Center the multi-line block on route_y (row 0) or route_y - row*2 (row>0).
+        let block_top = if row == 0 {
+            route_y.saturating_sub(num_lines / 2)
+        } else {
+            route_y.saturating_sub(row * 2).saturating_sub(num_lines / 2)
+        };
+
+        for (i, line) in lines.iter().enumerate() {
+            let lw = UnicodeWidthStr::width(line.as_str());
+            let mut label_x = base_x.saturating_sub(lw / 2);
+            // Right-edge clamp.
+            label_x = label_x.min(surface.width().saturating_sub(lw));
+            // Corridor clamping only when label is on the corridor (row 0).
+            if row == 0 && right_x > left_x && lw < right_x - left_x + 1 {
+                label_x = label_x.max(left_x).min(right_x + 1 - lw);
             }
-            if label_end < right_x {
-                surface.put_horizontal(
-                    label_end,
-                    route_y,
-                    right_x - label_end + 1,
-                    glyphs.horizontal,
-                    Layer::Connector,
-                );
+            let label_y = block_top + i;
+            surface.put_str_layered(label_x, label_y, line, Layer::Label);
+
+            // Restore corridor line on both sides of the label so it stays
+            // connected (label only replaces the segment it occupies).
+            if label_y == route_y && right_x > left_x {
+                let label_end = label_x + lw;
+                if label_x > left_x {
+                    surface.put_horizontal(
+                        left_x,
+                        route_y,
+                        label_x - left_x,
+                        glyphs.horizontal,
+                        Layer::Connector,
+                    );
+                }
+                if label_end < right_x {
+                    surface.put_horizontal(
+                        label_end,
+                        route_y,
+                        right_x - label_end + 1,
+                        glyphs.horizontal,
+                        Layer::Connector,
+                    );
+                }
             }
         }
 
@@ -626,10 +683,10 @@ fn draw_external_transition(
             let vcol = if forward { from_cx } else { to_cx };
             let top_y = if forward { from_anchor } else { to_anchor };
             let leg_top = top_y.min(route_y);
-            for ly in leg_top..label_y {
+            for ly in leg_top..block_top {
                 surface.put_layered(vcol, ly, glyphs.vertical, Layer::Connector);
             }
-            for ly in (label_y + 1)..=route_y {
+            for ly in (block_top + num_lines)..=route_y {
                 surface.put_layered(vcol, ly, glyphs.vertical, Layer::Connector);
             }
         }

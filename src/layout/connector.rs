@@ -275,18 +275,27 @@ impl Connector {
         build_three_segment(sx, sy, tx, ty, safe_y)
     }
 
-    /// Place the label so it does NOT overlap the connector line.
+    /// Place the label so it does NOT overlap the connector line. Long
+    /// labels are wrapped to the available width and stacked vertically.
     fn draw_label(&self, canvas: &mut Canvas, label: &str, path: &[Segment]) {
+        use crate::text::wrap_label;
         let (sx, sy) = self.source;
         let (tx, _ty) = self.target;
-        let lw = UnicodeWidthStr::width(label);
         let mid_x = (sx + tx) / 2;
+        let canvas_w = canvas.width();
 
         let has_h = path.iter().any(|s| matches!(s, Segment::H { .. }));
         if !has_h {
             // Purely vertical: label just below the source so it is clear
-            // which branch it belongs to.
-            canvas.put_str_layered(sx + 1, sy + 1, label, Layer::Label, None);
+            // which branch it belongs to. Wrap to the remaining canvas width.
+            let avail = canvas_w.saturating_sub(sx + 2).max(10);
+            let (lines, n, _) = wrap_label(label, avail);
+            for (i, line) in lines.iter().enumerate() {
+                let line_w = UnicodeWidthStr::width(line.as_str());
+                let lx = (sx + 1).min(canvas_w.saturating_sub(line_w));
+                canvas.put_str_layered(lx, sy + 1 + i, line, Layer::Label, None);
+            }
+            let _ = n;
             return;
         }
         if let Some(&Segment::H { x, y, len }) =
@@ -295,14 +304,27 @@ impl Connector {
             // Horizontal corridor: label one row above it, pinned no higher
             // than the source row so sibling labels line up.
             let center = if sx != tx { mid_x } else { x + len / 2 };
-            let label_x = center.saturating_sub(lw / 2).max(x);
-            let label_y = y.saturating_sub(1).max(sy);
-            canvas.put_str_layered(label_x, label_y, label, Layer::Label, None);
+            let avail = len.max(10);
+            let (lines, n, max_lw) = wrap_label(label, avail);
+            for (i, line) in lines.iter().enumerate() {
+                let line_w = UnicodeWidthStr::width(line.as_str());
+                let base_x = center.saturating_sub(line_w / 2).max(x);
+                let lx = base_x.min(canvas_w.saturating_sub(line_w).max(x));
+                let label_y = y.saturating_sub(n).saturating_add(i).max(sy);
+                canvas.put_str_layered(lx, label_y, line, Layer::Label, None);
+            }
+            let _ = max_lw;
             return;
         }
         // Same-row horizontal fallback: one row above.
-        let label_y = sy.saturating_sub(1);
-        canvas.put_str_layered(mid_x.saturating_sub(lw / 2), label_y, label, Layer::Label, None);
+        let avail = canvas_w.saturating_sub(mid_x).max(10);
+        let (lines, _, _) = wrap_label(label, avail);
+        for (i, line) in lines.iter().enumerate() {
+            let line_w = UnicodeWidthStr::width(line.as_str());
+            let label_y = sy.saturating_sub(1 + i);
+            let lx = mid_x.saturating_sub(line_w / 2);
+            canvas.put_str_layered(lx, label_y, line, Layer::Label, None);
+        }
     }
 }
 

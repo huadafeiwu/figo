@@ -28,23 +28,24 @@ impl TreeNode {
 pub fn draw_tree(
     root: Option<&str>,
     nodes: &[TreeNode],
-    _width: usize,
+    width: usize,
     charset: Charset,
 ) -> Result<String> {
-    Tree::new(charset).root(root).nodes(nodes).build()
+    Tree::new(charset, width).root(root).nodes(nodes).build()
 }
 
 /// Builder for tree diagrams.
 pub struct Tree {
     charset: Charset,
+    width: usize,
     root: Option<String>,
     nodes: Vec<TreeNode>,
 }
 
 impl Tree {
     /// Create a new tree builder.
-    pub fn new(charset: Charset) -> Self {
-        Self { charset, root: None, nodes: Vec::new() }
+    pub fn new(charset: Charset, width: usize) -> Self {
+        Self { charset, width: width.max(20), root: None, nodes: Vec::new() }
     }
 
     /// Set the root label.
@@ -77,7 +78,10 @@ impl Tree {
         let mut lines: Vec<String> = Vec::new();
 
         if let Some(ref root_label) = self.root {
-            lines.push(root_label.clone());
+            let (wrapped, _, _) = crate::text::wrap_label(root_label, self.width);
+            for wl in &wrapped {
+                lines.push(wl.clone());
+            }
         }
 
         // Compute last-sibling state at the top level; descendants are
@@ -96,7 +100,20 @@ impl Tree {
 
         let marker = if is_last { continuation } else { branch };
 
-        lines.push(format!("{prefix}{marker} {}", node.label));
+        // Wrap long labels so they don't overflow. Reserve space for prefix
+        // + marker + space.
+        let used = prefix.chars().count() + marker.chars().count() + 1;
+        let avail = self.width.saturating_sub(used).max(10);
+        let (wrapped, _, _) = crate::text::wrap_label(&node.label, avail);
+
+        let first_line = wrapped.first().map(|s| s.as_str()).unwrap_or("");
+        lines.push(format!("{prefix}{marker} {first_line}"));
+
+        // Continuation lines indented to align under the label text.
+        let indent = format!("{}{}  ", prefix, " ".repeat(marker.chars().count()));
+        for cont in wrapped.iter().skip(1) {
+            lines.push(format!("{indent}{cont}"));
+        }
 
         let child_prefix =
             if is_last { format!("{prefix}    ") } else { format!("{prefix}│   ") };
@@ -226,5 +243,22 @@ mod tests {
         assert!(out.contains("\\-- c.txt"));
         assert!(!out.contains("\\-- a.txt"));
         assert!(!out.contains("\\-- b.txt"));
+    }
+
+    #[test]
+    fn test_long_label_wraps() {
+        let long_label = "这是一个非常长的树节点标签内容超过了四十个字符需要换行处理";
+        let nodes = vec![TreeNode::new(long_label), TreeNode::new("short")];
+        let out = draw_tree(Some("root"), &nodes, 30, Charset::Ascii).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines.len() > 2, "expected wrapped output with multiple lines:\n{out}");
+        // No line should exceed 30 chars (display width).
+        for line in &lines {
+            assert!(unicode_width::UnicodeWidthStr::width(*line) <= 35, "line too wide: '{line}'");
+        }
+        // All label characters must appear.
+        for ch in long_label.chars() {
+            assert!(out.contains(ch), "label char '{ch}' missing:\n{out}");
+        }
     }
 }

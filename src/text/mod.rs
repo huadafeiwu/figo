@@ -97,6 +97,20 @@ pub fn split_at_display_width(s: &str, width: usize) -> (String, String) {
     (left, right)
 }
 
+/// Wrap a label to `max_width` display columns and return the lines,
+/// line count, and the widest line's display width.
+///
+/// This is the standard entry point for diagram label wrapping: it
+/// enforces a minimum width of 2 (so CJK glyphs always fit) and returns
+/// the metadata layout engines need to size canvases and gaps.
+pub fn wrap_label(label: &str, max_width: usize) -> (Vec<String>, usize, usize) {
+    let mw = max_width.max(2);
+    let lines = word_wrap(label, mw);
+    let count = lines.len();
+    let max_w = lines.iter().map(|l| UnicodeWidthStr::width(l.as_str())).max().unwrap_or(0);
+    (lines, count, max_w)
+}
+
 /// Align text horizontally within `width`.
 ///
 /// `text` should already be wrapped to fit `width`.
@@ -151,5 +165,33 @@ mod tests {
         let lines = vec!["Hi".to_string()];
         let aligned = align_horizontal(&lines, 6, HAlign::Center);
         assert_eq!(aligned, vec!["  Hi  "]);
+    }
+
+    #[test]
+    fn test_wrap_label_cjk_long() {
+        let label = "开始执行驱动注册流程并等待总线回调";
+        let (lines, count, max_w) = wrap_label(label, 10);
+        assert!(count > 1, "should wrap into multiple lines: {lines:?}");
+        for line in &lines {
+            let lw = UnicodeWidthStr::width(line.as_str());
+            assert!(lw <= 10, "line '{line}' width {lw} exceeds 10");
+        }
+        assert!(max_w > 0);
+    }
+
+    #[test]
+    fn test_wrap_label_no_truncation() {
+        let label = "开始执行驱动注册流程并等待总线回调返回结果";
+        let (lines, _, _) = wrap_label(label, 8);
+        let reconstructed: String = lines.join("");
+        assert_eq!(reconstructed, label, "wrapping must not lose characters");
+    }
+
+    #[test]
+    fn test_wrap_label_short_label() {
+        let (lines, count, max_w) = wrap_label("hello", 30);
+        assert_eq!(lines, vec!["hello"]);
+        assert_eq!(count, 1);
+        assert_eq!(max_w, 5);
     }
 }

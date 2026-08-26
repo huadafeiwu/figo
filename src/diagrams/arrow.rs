@@ -95,12 +95,11 @@ impl Arrow {
     }
 
     fn draw_horizontal(&self) -> Result<String> {
+        use crate::text::wrap_label;
         let (line, right_head) = self.arrow_chars();
         let (_, left_head) = self.left_arrow_chars();
 
         let label = self.label.as_deref().unwrap_or("");
-        let label_width = label.width();
-        let height = if label.is_empty() { 1usize } else { 3usize };
         let left_head_width = left_head.width();
         let right_head_width = right_head.width();
         let total_width = if self.direction == "bidirectional" {
@@ -108,10 +107,19 @@ impl Arrow {
         } else {
             self.length + right_head_width
         };
-        let width = total_width.max(label_width);
+
+        // Wrap long labels instead of letting them grow the canvas unbounded.
+        let max_label_w = total_width.max(60);
+        let (label_lines, num_lines, max_line_w) = if label.is_empty() {
+            (Vec::new(), 0usize, 0usize)
+        } else {
+            wrap_label(label, max_label_w)
+        };
+        let height = if label.is_empty() { 1usize } else { num_lines + 2 };
+        let width = total_width.max(max_line_w);
 
         let mut canvas = Canvas::new(width, height);
-        let arrow_y = if label.is_empty() { 0 } else { 1 };
+        let arrow_y = if label.is_empty() { 0 } else { num_lines + 1 };
 
         match self.direction.as_str() {
             "right" => {
@@ -122,7 +130,6 @@ impl Arrow {
             "left" => {
                 canvas.put_str(0, arrow_y, left_head);
                 let body: String = line.repeat(self.length);
-                // Use char count, not byte length, for the offset
                 let head_width = left_head.width();
                 canvas.put_str(head_width, arrow_y, &body);
             }
@@ -137,14 +144,18 @@ impl Arrow {
         }
 
         if !label.is_empty() {
-            let start_x = (total_width.saturating_sub(label_width)) / 2;
-            canvas.put_str(start_x, 0, label);
+            for (i, l) in label_lines.iter().enumerate() {
+                let lw = UnicodeWidthStr::width(l.as_str());
+                let start_x = (total_width.saturating_sub(lw)) / 2;
+                canvas.put_str(start_x, i, l);
+            }
         }
 
         Ok(canvas.render(false))
     }
 
     fn draw_vertical(&self) -> Result<String> {
+        use crate::text::wrap_label;
         let (head, line) = if self.direction == "up" {
             match (self.style, self.charset) {
                 (LineStyle::Simple, Charset::Unicode) => ("↑", "│"),
@@ -167,8 +178,15 @@ impl Arrow {
 
         let label = self.label.as_deref().unwrap_or("");
         let label_len = label.width();
-        // Center the arrow horizontally
-        let width = label_len.max(1);
+        // +1 so a label placed at x=1 (right of the vertical line at x=0)
+        // doesn't have its last character clipped at the canvas edge.
+        let max_label_w = 60usize;
+        let (label_lines, _num_lines, max_line_w) = if label.is_empty() {
+            (Vec::new(), 0usize, 0usize)
+        } else {
+            wrap_label(label, max_label_w)
+        };
+        let width = if label.is_empty() { 1usize } else { (label_len + 1).max(max_line_w + 1) };
         let height = self.length + 1;
 
         let mut canvas = Canvas::new(width, height);
@@ -184,9 +202,11 @@ impl Arrow {
             canvas.put_str(0, self.length, head);
         }
 
-        // Label on the right
+        // Label on the right side of the vertical line, wrapped.
         if !label.is_empty() {
-            canvas.put_str(1, 0, label);
+            for (i, l) in label_lines.iter().enumerate() {
+                canvas.put_str(1, i, l);
+            }
         }
 
         Ok(canvas.render(false))
@@ -240,5 +260,26 @@ mod tests {
     #[test]
     fn test_invalid_direction() {
         assert!(draw_arrow("north", 5, LineStyle::Simple, Charset::Ascii, None).is_err());
+    }
+
+    #[test]
+    fn test_vertical_arrow_label_not_clipped() {
+        let out = draw_arrow("down", 3, LineStyle::Simple, Charset::Ascii, Some("X")).unwrap();
+        assert!(out.contains("X"), "single-char vertical label must be visible:\n{out}");
+    }
+
+    #[test]
+    fn test_long_horizontal_label_wraps() {
+        let long_label = "数据从用户空间传输到硬件设备的完整路径";
+        let out =
+            draw_arrow("right", 10, LineStyle::Simple, Charset::Ascii, Some(long_label)).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        // Label should wrap into multiple lines, arrow on the last non-empty line.
+        assert!(lines.len() > 2, "expected multi-line output:\n{out}");
+        assert!(out.contains(">"), "arrowhead missing:\n{out}");
+        // Every label character must appear somewhere in the output.
+        for ch in long_label.chars() {
+            assert!(out.contains(ch), "label char '{ch}' missing:\n{out}");
+        }
     }
 }

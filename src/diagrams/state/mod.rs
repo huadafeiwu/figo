@@ -212,4 +212,27 @@ mod tests {
             "accepting state needs double border, got {tl_count} top-left corners"
         );
     }
+
+    #[test]
+    fn test_long_transition_label_wraps() {
+        let long_label = "初始化完成且所有校验检查均通过后进入正常运行状态";
+        let out = StateDiagram::new(60, Charset::Unicode)
+            .add_state(StateNode {
+                id: "init".into(),
+                label: "初始化".into(),
+                state_type: StateType::Simple,
+            })
+            .add_state(StateNode {
+                id: "running".into(),
+                label: "运行中".into(),
+                state_type: StateType::Simple,
+            })
+            .initial("init")
+            .add_transition("init", "running", Some(long_label))
+            .build()
+            .unwrap();
+        for ch in long_label.chars() {
+            assert!(out.contains(ch), "label char '{ch}' missing:\n{out}");
+        }
+    }
 }
