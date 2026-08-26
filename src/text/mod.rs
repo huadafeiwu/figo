@@ -76,7 +76,8 @@ pub fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
 /// Split text into tokens at whitespace, separator characters (`_`, `-`, `.`,
 /// `/`), and CJK boundaries. Returns `(token, needs_space_before)` pairs.
 /// Separators stay attached to the preceding token (e.g. `driver_bind` →
-/// `driver_`, `bind`). CJK characters are each their own token with no space.
+/// `driver_`, `bind`). Consecutive CJK characters are grouped into a single
+/// token so wrapping doesn't isolate a single CJK character on its own line.
 fn tokenize(text: &str) -> Vec<(String, bool)> {
     let mut tokens: Vec<(String, bool)> = Vec::new();
     let mut current = String::new();
@@ -95,13 +96,18 @@ fn tokenize(text: &str) -> Vec<(String, bool)> {
             tokens.push((std::mem::take(&mut current), after_space));
             after_space = false;
         } else if is_cjk(ch) {
-            if !current.is_empty() {
+            // Group consecutive CJK characters into a single token so the
+            // wrapper doesn't isolate a single CJK character on its own line.
+            if !current.is_empty() && !is_cjk(current.chars().last().unwrap()) {
                 tokens.push((std::mem::take(&mut current), after_space));
                 after_space = false;
             }
-            tokens.push((ch.to_string(), after_space));
-            after_space = false;
+            current.push(ch);
         } else {
+            if !current.is_empty() && is_cjk(current.chars().last().unwrap()) {
+                tokens.push((std::mem::take(&mut current), after_space));
+                after_space = false;
+            }
             current.push(ch);
         }
     }
