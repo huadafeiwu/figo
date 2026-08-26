@@ -238,9 +238,10 @@ impl<'a> SequenceDiagram<'a> {
         v_ch: char,
         label: &str,
     ) {
-        let corner_top_right = '┐';
-        let corner_bot_right = '┘';
-        let h_ch = '─';
+        let is_unicode = v_ch == '│';
+        let corner_top_right = if is_unicode { '┐' } else { '+' };
+        let corner_bot_right = if is_unicode { '┘' } else { '+' };
+        let h_ch = if is_unicode { '─' } else { '-' };
         let loop_top_x = from_x + 2;
         let loop_bot_x = from_x + 2;
         canvas.put_layered(from_x, arrow_y, h_ch, Layer::Connector, None);
