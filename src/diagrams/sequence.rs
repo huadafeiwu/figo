@@ -97,7 +97,7 @@ impl<'a> SequenceDiagram<'a> {
         let minimum_box_w = max_name_len + 4;
         let minimum_lane_w = minimum_box_w + LANE_GAP;
         let ideal_lane_w = self.width / n.max(1);
-        let lane_width = ideal_lane_w.max(minimum_lane_w).min(40);
+        let lane_width = ideal_lane_w.max(minimum_lane_w).min(40).min(self.width);
         let box_width = lane_width - LANE_GAP;
         let actual_width = (lane_width * n).max(self.width);
 

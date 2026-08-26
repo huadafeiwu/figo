@@ -103,7 +103,7 @@ impl Tree {
         // Wrap long labels so they don't overflow. Reserve space for prefix
         // + marker + space.
         let used = prefix.chars().count() + marker.chars().count() + 1;
-        let avail = self.width.saturating_sub(used).max(10);
+        let avail = self.width.saturating_sub(used).max(2);
         let (wrapped, _, _) = crate::text::wrap_label(&node.label, avail);
 
         let first_line = wrapped.first().map(|s| s.as_str()).unwrap_or("");
@@ -252,9 +252,9 @@ mod tests {
         let out = draw_tree(Some("root"), &nodes, 30, Charset::Ascii).unwrap();
         let lines: Vec<&str> = out.lines().collect();
         assert!(lines.len() > 2, "expected wrapped output with multiple lines:\n{out}");
-        // No line should exceed 30 chars (display width).
+        // No line should exceed width + marker overhead.
         for line in &lines {
-            assert!(unicode_width::UnicodeWidthStr::width(*line) <= 35, "line too wide: '{line}'");
+            assert!(unicode_width::UnicodeWidthStr::width(*line) <= 33, "line too wide: '{line}'");
         }
         // All label characters must appear.
         for ch in long_label.chars() {

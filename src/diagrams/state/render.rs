@@ -79,7 +79,7 @@ impl<'a> StateDiagram<'a> {
             layout_states(&self.states, &self.transitions, self.initial, self.width, &params);
 
         // Expand horizontal spacing so corridors are wide enough for labels.
-        expand_corridors_for_labels(&mut layouts, &self.transitions, &params);
+        expand_corridors_for_labels(&mut layouts, &self.transitions, &params, self.width);
 
         let label_rows = compute_label_rows(&self.transitions, &layouts);
 
@@ -129,7 +129,14 @@ impl<'a> StateDiagram<'a> {
 
             draw_initial_arrow(&mut surface, &id_to_layout, self.initial, self.charset);
             draw_states(&mut surface, &layouts, &ctx)?;
-            draw_transitions(&mut surface, &self.transitions, &id_to_layout, &label_rows, &ctx);
+            draw_transitions(
+                &mut surface,
+                &self.transitions,
+                &id_to_layout,
+                &label_rows,
+                &ctx,
+                total_w,
+            );
         }
 
         canvas.repair_connector_junctions(LineStyle::Simple, self.charset);
@@ -283,6 +290,7 @@ fn expand_corridors_for_labels(
     layouts: &mut [StateLayout],
     transitions: &[Transition],
     _params: &LayoutParams,
+    canvas_width: usize,
 ) {
     // Pre-resolve transition endpoints to indices so we don't hold an
     // immutable borrow of `layouts` inside the mutable shift loop.
@@ -311,14 +319,25 @@ fn expand_corridors_for_labels(
         if from_cx == to_cx {
             continue;
         }
-        let lw = text.width();
         let corridor_w = from_cx.abs_diff(to_cx) + 1;
-        let needed = lw + 4;
+        // Wrap the label to the corridor width first, then use the wrapped
+        // max line width (not the full unwrapped width) to compute how
+        // much extra space we need. This ensures labels that fit within
+        // the corridor after wrapping don't trigger unnecessary expansion,
+        // and labels that still don't fit after wrapping are expanded
+        // proportionally to the wrapped width, bounded by canvas_width.
+        let (_, _, max_lw) = crate::text::wrap_label(text, corridor_w);
+        let needed = max_lw + 4;
         if needed <= corridor_w {
             continue;
         }
+        // Cap the expansion so the layout doesn't exceed canvas_width.
+        let max_needed = canvas_width.min(max_lw + 4);
+        if max_needed <= corridor_w {
+            continue;
+        }
 
-        let extra = (needed - corridor_w) as isize;
+        let extra = (max_needed - corridor_w) as isize;
         let direction = if to_cx > from_cx { 1isize } else { -1 };
         let shift = extra * direction;
 
@@ -531,6 +550,7 @@ fn draw_transitions(
     id_to_layout: &HashMap<String, StateLayoutRef>,
     label_rows: &HashMap<usize, usize>,
     ctx: &PaintContext,
+    canvas_width: usize,
 ) {
     for (idx, t) in transitions.iter().enumerate() {
         let Some(from) = id_to_layout.get(&t.from) else { continue };
@@ -542,7 +562,15 @@ fn draw_transitions(
         }
 
         let row = label_rows.get(&idx).copied().unwrap_or(0);
-        draw_external_transition(surface, from.rect, to.rect, t.label.as_deref(), row, ctx);
+        draw_external_transition(
+            surface,
+            from.rect,
+            to.rect,
+            t.label.as_deref(),
+            row,
+            ctx,
+            canvas_width,
+        );
     }
 }
 
@@ -553,6 +581,7 @@ fn draw_external_transition(
     label: Option<&str>,
     row: usize,
     ctx: &PaintContext,
+    canvas_width: usize,
 ) {
     let glyphs = BorderStyle::Single.glyphs(ctx.charset);
     let from_cx = from.x + from.w / 2;
@@ -621,7 +650,7 @@ fn draw_external_transition(
             (right_x - left_x + 1).max(10)
         } else {
             // Same-column: use remaining canvas width to the right.
-            surface.width().saturating_sub(from_cx + 2).max(10)
+            canvas_width.saturating_sub(from_cx + 2).max(10)
         };
 
         let (lines, num_lines, _) = wrap_label(text, avail);
@@ -643,7 +672,7 @@ fn draw_external_transition(
             let lw = UnicodeWidthStr::width(line.as_str());
             let mut label_x = base_x.saturating_sub(lw / 2);
             // Right-edge clamp.
-            label_x = label_x.min(surface.width().saturating_sub(lw));
+            label_x = label_x.min(canvas_width.saturating_sub(lw));
             // Corridor clamping only when label is on the corridor (row 0).
             if row == 0 && right_x > left_x && lw < right_x - left_x + 1 {
                 label_x = label_x.max(left_x).min(right_x + 1 - lw);

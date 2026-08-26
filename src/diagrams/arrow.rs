@@ -27,7 +27,19 @@ pub fn draw_arrow(
     charset: Charset,
     label: Option<&str>,
 ) -> Result<String> {
-    let mut arrow = Arrow::new(direction, length, style, charset)?;
+    draw_arrow_with_width(direction, length, 80, style, charset, label)
+}
+
+/// Same as [`draw_arrow`] but with an explicit width for label wrapping.
+pub fn draw_arrow_with_width(
+    direction: &str,
+    length: usize,
+    width: usize,
+    style: LineStyle,
+    charset: Charset,
+    label: Option<&str>,
+) -> Result<String> {
+    let mut arrow = Arrow::new(direction, length, style, charset)?.width(width);
     if let Some(l) = label {
         arrow = arrow.label(l);
     }
@@ -38,6 +50,7 @@ pub fn draw_arrow(
 pub struct Arrow {
     direction: String,
     length: usize,
+    width: usize,
     style: LineStyle,
     charset: Charset,
     label: Option<String>,
@@ -51,7 +64,20 @@ impl Arrow {
                 "unknown direction '{direction}'"
             )));
         }
-        Ok(Self { direction: direction.to_string(), length, style, charset, label: None })
+        Ok(Self {
+            direction: direction.to_string(),
+            length,
+            width: 80,
+            style,
+            charset,
+            label: None,
+        })
+    }
+
+    /// Set the maximum width for label wrapping (hard upper limit).
+    pub fn width(mut self, width: usize) -> Self {
+        self.width = width;
+        self
     }
 
     /// Set an optional label for the arrow.
@@ -108,15 +134,15 @@ impl Arrow {
             self.length + right_head_width
         };
 
-        // Wrap long labels instead of letting them grow the canvas unbounded.
-        let max_label_w = total_width.max(60);
-        let (label_lines, num_lines, max_line_w) = if label.is_empty() {
+        // Wrap long labels to the user-specified width (hard upper limit).
+        let max_label_w = self.width.min(total_width.max(10));
+        let (label_lines, num_lines, _) = if label.is_empty() {
             (Vec::new(), 0usize, 0usize)
         } else {
             wrap_label(label, max_label_w)
         };
         let height = if label.is_empty() { 1usize } else { num_lines + 2 };
-        let width = total_width.max(max_line_w);
+        let width = self.width.max(total_width);
 
         let mut canvas = Canvas::new(width, height);
         let arrow_y = if label.is_empty() { 0 } else { num_lines + 1 };
@@ -177,16 +203,16 @@ impl Arrow {
         };
 
         let label = self.label.as_deref().unwrap_or("");
-        let label_len = label.width();
         // +1 so a label placed at x=1 (right of the vertical line at x=0)
         // doesn't have its last character clipped at the canvas edge.
-        let max_label_w = 60usize;
+        // Wrap to the user-specified width (hard upper limit).
+        let max_label_w = self.width.saturating_sub(1).max(10);
         let (label_lines, _num_lines, max_line_w) = if label.is_empty() {
             (Vec::new(), 0usize, 0usize)
         } else {
             wrap_label(label, max_label_w)
         };
-        let width = if label.is_empty() { 1usize } else { (label_len + 1).max(max_line_w + 1) };
+        let width = if label.is_empty() { 1usize } else { (max_line_w + 1).min(self.width) };
         let height = self.length + 1;
 
         let mut canvas = Canvas::new(width, height);

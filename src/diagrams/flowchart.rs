@@ -320,28 +320,7 @@ impl Flowchart {
         let max_w = positions.iter().map(|p| p.rect.right()).max().unwrap_or(0).max(self.width);
         // Reserve room on the right for back-edge side corridors and labels.
         let side_room = self.side_room_for_back_edges(positions);
-
-        // Also account for forward-edge labels that may extend past node
-        // edges. A vertical connector's label sits at sx+1 and can be as
-        // wide as the label text.
-        let mut label_extra_w = 0usize;
-        for conn in &self.connections {
-            if let (Some(&from), Some(&to)) =
-                (pos_map.get(conn.from.as_str()), pos_map.get(conn.to.as_str()))
-            {
-                let is_back = from.rect.y >= to.rect.y;
-                if is_back {
-                    continue;
-                }
-                if let Some(label) = &conn.label {
-                    let lw = label.width();
-                    let src_cx = from.rect.cx();
-                    let label_right = src_cx + 1 + lw;
-                    label_extra_w = label_extra_w.max(label_right);
-                }
-            }
-        }
-        let total_w = (max_w + side_room).max(label_extra_w + 2);
+        let total_w = max_w + side_room;
 
         let max_h = positions.iter().map(|p| p.rect.bottom()).max().unwrap_or(10)
             + 2
@@ -377,13 +356,11 @@ impl Flowchart {
                     .iter()
                     .filter(|p| p.node.id != from.node.id && p.node.id != to.node.id)
                     .map(|p| p.rect),
-            );
+            )
+            .with_user_width(self.width);
             if let Some(label) = &conn.label {
                 connector.label = Some(label.clone());
             }
-            // Read the canvas width BEFORE the mutable borrow to satisfy
-            // the borrow checker (can't borrow canvas mutably and immutably
-            // in the same expression).
             if is_back {
                 let w = canvas.width();
                 connector.render_side_route(&mut canvas, &all_rects, w);
@@ -456,13 +433,19 @@ impl Flowchart {
                     (Some(fy), Some(ty)) if fy > ty
                 )
             })
-            .map(|c| c.label.as_ref().map(|l| l.width()).unwrap_or(0))
+            .map(|c| {
+                c.label
+                    .as_ref()
+                    .map(|l| {
+                        // Use the wrapped width (bounded by self.width) not
+                        // the full unwrapped label width.
+                        let (_, _, max_lw) = crate::text::wrap_label(l, self.width);
+                        max_lw
+                    })
+                    .unwrap_or(0)
+            })
             .max()
             .unwrap_or(0);
-        // route_x = max_right + 2, label at route_x + 1, so label end is
-        // max_right + 2 + 1 + label_len. Canvas width is max_w + side_room.
-        // In the worst case max_w == max_right, so side_room must cover
-        // the corridor (2) + label gap (1) + label length.
         (3 + max_label_len).max(6)
     }
 

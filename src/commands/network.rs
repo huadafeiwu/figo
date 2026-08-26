@@ -73,7 +73,6 @@ pub fn run_tree(input: &str) -> Result<String> {
 
 #[derive(Deserialize)]
 struct ArrowInput {
-    #[allow(dead_code)]
     width: usize,
     charset: JsonCharset,
     direction: String,
@@ -94,5 +93,12 @@ pub fn run_arrow(input: &str) -> Result<String> {
         Some("box_drawing") => LineStyle::BoxDrawing,
         _ => LineStyle::Simple,
     };
-    arrow::draw_arrow(&inp.direction, inp.length, style, inp.charset.into(), inp.label.as_deref())
+    arrow::draw_arrow_with_width(
+        &inp.direction,
+        inp.length,
+        inp.width,
+        style,
+        inp.charset.into(),
+        inp.label.as_deref(),
+    )
 }
