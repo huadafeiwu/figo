@@ -1,6 +1,6 @@
 //! Command handlers for packet, tree, and arrow diagrams.
 
-use super::JsonCharset;
+use super::{JsonCharset, resolve_width};
 use figo::diagrams::packet::{PacketDiagram, PacketField};
 use figo::diagrams::{arrow, tree};
 use figo::error::Result;
@@ -11,6 +11,7 @@ use serde::Deserialize;
 
 #[derive(Deserialize)]
 struct PacketInput {
+    #[serde(default)]
     width: usize,
     charset: JsonCharset,
     fields: Vec<PacketFieldJson>,
@@ -28,13 +29,17 @@ pub fn run_packet(input: &str) -> Result<String> {
     let inp: PacketInput = serde_json::from_str(input)?;
     let fields: Vec<PacketField> =
         inp.fields.into_iter().map(|f| PacketField { name: f.name, bits: f.bits }).collect();
-    PacketDiagram::new(inp.width, inp.charset.into()).fields(&fields).color(inp.color).build()
+    PacketDiagram::new(resolve_width(inp.width), inp.charset.into())
+        .fields(&fields)
+        .color(inp.color)
+        .build()
 }
 
 // -- Tree -------------------------------------------------------------------
 
 #[derive(Deserialize)]
 struct TreeInput {
+    #[serde(default)]
     width: usize,
     charset: JsonCharset,
     #[serde(default)]
@@ -66,13 +71,14 @@ fn convert_tree_nodes(json_nodes: &[TreeNodeJson]) -> Vec<tree::TreeNode> {
 pub fn run_tree(input: &str) -> Result<String> {
     let inp: TreeInput = serde_json::from_str(input)?;
     let nodes = convert_tree_nodes(&inp.nodes);
-    tree::draw_tree(inp.root.as_deref(), &nodes, inp.width, inp.charset.into())
+    tree::draw_tree(inp.root.as_deref(), &nodes, resolve_width(inp.width), inp.charset.into())
 }
 
 // -- Arrow -------------------------------------------------------------------
 
 #[derive(Deserialize)]
 struct ArrowInput {
+    #[serde(default)]
     width: usize,
     charset: JsonCharset,
     direction: String,
@@ -96,7 +102,7 @@ pub fn run_arrow(input: &str) -> Result<String> {
     arrow::draw_arrow_with_width(
         &inp.direction,
         inp.length,
-        inp.width,
+        resolve_width(inp.width),
         style,
         inp.charset.into(),
         inp.label.as_deref(),

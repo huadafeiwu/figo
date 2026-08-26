@@ -96,3 +96,56 @@ pub(crate) fn parse_valign(s: &str) -> figo::style::VAlign {
         _ => figo::style::VAlign::Top,
     }
 }
+
+/// Detect the default canvas width from the primary monitor's resolution
+/// and DPI scaling. Falls back to 120 on non-Windows platforms or failure.
+///
+/// Formula: columns = (screen_width_px / dpi_scale) / 16, capped to [80, 200].
+/// Examples: 1920px@96dpi → 120, 2560px@96dpi → 160, 3840px@144dpi → 160.
+pub fn default_width() -> usize {
+    #[cfg(windows)]
+    {
+        detect_width_windows().unwrap_or(120)
+    }
+    #[cfg(not(windows))]
+    {
+        120
+    }
+}
+
+#[cfg(windows)]
+fn detect_width_windows() -> Option<usize> {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::Graphics::Gdi::{GetDC, GetDeviceCaps, LOGPIXELSX, ReleaseDC};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN};
+
+    unsafe {
+        let screen_w = GetSystemMetrics(SM_CXSCREEN);
+        if screen_w == 0 {
+            return None;
+        }
+        // Get DPI from the screen DC.
+        let hwnd: HWND = std::ptr::null_mut();
+        let hdc = GetDC(hwnd);
+        if hdc.is_null() {
+            // Fallback: assume 96 DPI (100%).
+            let cols = (screen_w as f64 / 96.0 * 6.0).round() as usize;
+            return Some(cols.clamp(80, 200));
+        }
+        let dpi = GetDeviceCaps(hdc, LOGPIXELSX as i32) as f64;
+        let _ = ReleaseDC(hwnd, hdc);
+        if dpi <= 0.0 {
+            return None;
+        }
+        // Each character ≈ 16 pixels at 96 DPI; scale by DPI.
+        let effective_w = screen_w as f64 / dpi * 96.0;
+        let cols = (effective_w / 16.0).round() as usize;
+        Some(cols.clamp(80, 200))
+    }
+}
+
+/// Resolve width: use the user-specified value if non-zero, otherwise
+/// detect from the display.
+pub fn resolve_width(user_width: usize) -> usize {
+    if user_width > 0 { user_width } else { default_width() }
+}

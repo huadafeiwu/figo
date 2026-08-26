@@ -115,8 +115,12 @@ pub fn layout_states(
 
     let mut y = params.top_margin;
 
-    // Shift layers if the initial pseudo-state needs room to the left.
-    let dx = if initial.is_some() { 5 } else { 0 };
+    // When there's an initial pseudo-state, reserve left margin for the
+    // entry arrow (drawn at layout.rect.x - 6). Instead of shifting all
+    // layers right by dx (which breaks centering), reduce the effective
+    // canvas width so centering accounts for the left margin.
+    let left_margin = if initial.is_some() { 6 } else { 0 };
+    let effective_width = canvas_width.saturating_sub(left_margin);
 
     let mut layouts = Vec::with_capacity(node_count);
 
@@ -127,9 +131,9 @@ pub fn layout_states(
         let max_h = indices.iter().map(|&i| sizes[i].h).max().unwrap_or(params.state_height);
         let total_w: usize =
             indices.iter().map(|&i| sizes[i].w).sum::<usize>() + (indices.len() - 1) * params.gap_x;
-        let start_x = canvas_width.saturating_sub(total_w) / 2;
+        let start_x = effective_width.saturating_sub(total_w) / 2 + left_margin;
 
-        let mut x = start_x + dx;
+        let mut x = start_x;
         for &idx in indices {
             let size = sizes[idx];
             layouts.push(StateLayout {

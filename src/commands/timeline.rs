@@ -1,6 +1,6 @@
 //! Command handlers for sequence, banner, and gantt diagrams.
 
-use super::JsonCharset;
+use super::{JsonCharset, resolve_width};
 use figo::diagrams::banner;
 use figo::diagrams::gantt::{GanttChart, GanttSection, GanttTask, TimeUnit};
 use figo::diagrams::sequence::SequenceDiagram;
@@ -11,6 +11,7 @@ use serde::Deserialize;
 
 #[derive(Deserialize)]
 struct SequenceInput {
+    #[serde(default)]
     width: usize,
     charset: JsonCharset,
     participants: Vec<String>,
@@ -28,7 +29,8 @@ struct SequenceMessageJson {
 
 pub fn run_sequence(input: &str) -> Result<String> {
     let inp: SequenceInput = serde_json::from_str(input)?;
-    let mut sd = SequenceDiagram::new(inp.width, inp.charset.into()).color(inp.color);
+    let mut sd =
+        SequenceDiagram::new(resolve_width(inp.width), inp.charset.into()).color(inp.color);
     for p in &inp.participants {
         sd = sd.add_participant(p);
     }
@@ -42,6 +44,7 @@ pub fn run_sequence(input: &str) -> Result<String> {
 
 #[derive(Deserialize)]
 struct BannerInput {
+    #[serde(default)]
     width: usize,
     #[allow(dead_code)]
     charset: JsonCharset,
@@ -53,13 +56,14 @@ struct BannerInput {
 
 pub fn run_banner(input: &str) -> Result<String> {
     let inp: BannerInput = serde_json::from_str(input)?;
-    banner::draw_banner(&inp.text, inp.width)
+    banner::draw_banner(&inp.text, resolve_width(inp.width))
 }
 
 // -- Gantt -------------------------------------------------------------------
 
 #[derive(Deserialize)]
 struct GanttInput {
+    #[serde(default)]
     width: usize,
     charset: JsonCharset,
     time_unit: String,
@@ -106,7 +110,8 @@ pub fn run_gantt(input: &str) -> Result<String> {
     };
     let total_units = inp.total_units.unwrap_or(30);
     let mut gc =
-        GanttChart::new(inp.width, inp.charset.into(), time_unit, total_units).color(inp.color);
+        GanttChart::new(resolve_width(inp.width), inp.charset.into(), time_unit, total_units)
+            .color(inp.color);
     if let Some(today) = inp.today_marker {
         gc = gc.today_marker(today);
     }

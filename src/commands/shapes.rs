@@ -2,7 +2,7 @@
 
 use super::{
     JsonAlignment, JsonBorder, JsonCharset, JsonPadding, border_from_json, parse_halign,
-    parse_valign,
+    parse_valign, resolve_width,
 };
 use figo::diagrams::{box_art, table};
 use figo::error::Result;
@@ -13,6 +13,7 @@ use serde::Deserialize;
 
 #[derive(Deserialize)]
 struct BoxInput {
+    #[serde(default)]
     width: usize,
     charset: JsonCharset,
     #[serde(default)]
@@ -32,7 +33,7 @@ struct BoxInput {
 pub fn run_box(input: &str) -> Result<String> {
     let inp: BoxInput = serde_json::from_str(input)?;
     let border = inp.border.map(border_from_json).unwrap_or(BorderStyle::Single);
-    let mut b = box_art::BoxArt::new(inp.width, inp.charset.into())
+    let mut b = box_art::BoxArt::new(resolve_width(inp.width), inp.charset.into())
         .title(inp.title.as_deref())
         .content(inp.content.as_deref())
         .border(border)
@@ -50,6 +51,7 @@ pub fn run_box(input: &str) -> Result<String> {
 
 #[derive(Deserialize)]
 struct TableInput {
+    #[serde(default)]
     width: usize,
     charset: JsonCharset,
     #[serde(default)]
@@ -74,7 +76,9 @@ pub fn run_table(input: &str) -> Result<String> {
     let hdrs: Vec<&str> = hdrs_str.iter().map(|s| s.as_str()).collect();
     let rows: Vec<Vec<&str>> =
         rows_str.iter().map(|r| r.iter().map(|s| s.as_str()).collect()).collect();
-    let mut tb = table::Table::new(inp.width, inp.charset.into()).border(border).color(inp.color);
+    let mut tb = table::Table::new(resolve_width(inp.width), inp.charset.into())
+        .border(border)
+        .color(inp.color);
     if !hdrs.is_empty() {
         tb = tb.headers(&hdrs);
     }

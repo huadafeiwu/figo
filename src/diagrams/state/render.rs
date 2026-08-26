@@ -81,6 +81,10 @@ impl<'a> StateDiagram<'a> {
         // Expand horizontal spacing so corridors are wide enough for labels.
         expand_corridors_for_labels(&mut layouts, &self.transitions, &params, self.width);
 
+        // Recenter each layer within the canvas width after corridor
+        // expansion may have pushed states rightward.
+        recenter_layouts(&mut layouts, self.width);
+
         let label_rows = compute_label_rows(&self.transitions, &layouts);
 
         // Compute per-gap max row and expand gaps accordingly.
@@ -181,13 +185,14 @@ fn compute_canvas_width(layouts: &[StateLayout], params: &LayoutParams) -> usize
 
 fn compute_canvas_height(
     layouts: &[StateLayout],
-    params: &LayoutParams,
-    max_label_row: usize,
+    _params: &LayoutParams,
+    _max_label_row: usize,
 ) -> usize {
     let bottommost = layouts.iter().map(|l| l.rect.bottom()).max().unwrap_or(0);
-    // Account for multi-line labels: each row adds 2 rows, and each
-    // label may wrap into multiple lines. Use a generous estimate.
-    bottommost + params.gap_y * 2 + max_label_row * 2 + 6
+    // apply_gap_expansion already shifted states down to make room for
+    // multi-line labels, so bottommost already includes that space.
+    // Just add a small bottom margin.
+    bottommost + 1
 }
 
 // ── Label row computation ─────────────────────────────────────────────
@@ -282,6 +287,29 @@ fn compute_label_rows(
 fn shift_layouts(layouts: &mut [StateLayout], dy: usize) {
     for layout in layouts.iter_mut() {
         layout.rect.y += dy;
+    }
+}
+
+/// Recenter each layer's states horizontally within `canvas_width`.
+/// Groups states by their y coordinate, finds the layer's content bounds,
+/// and shifts them so the content is centered.
+fn recenter_layouts(layouts: &mut [StateLayout], canvas_width: usize) {
+    use std::collections::HashMap;
+    let mut y_groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (i, l) in layouts.iter().enumerate() {
+        y_groups.entry(l.rect.y).or_default().push(i);
+    }
+    for indices in y_groups.values() {
+        let min_x = indices.iter().map(|&i| layouts[i].rect.x).min().unwrap_or(0);
+        let max_right = indices.iter().map(|&i| layouts[i].rect.right()).max().unwrap_or(0);
+        let content_w = max_right.saturating_sub(min_x);
+        let target_start = canvas_width.saturating_sub(content_w) / 2;
+        let shift = target_start as isize - min_x as isize;
+        if shift != 0 {
+            for &i in indices {
+                layouts[i].rect.x = (layouts[i].rect.x as isize + shift).max(0) as usize;
+            }
+        }
     }
 }
 

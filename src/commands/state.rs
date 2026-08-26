@@ -1,11 +1,13 @@
 //! Command handler for FSM state diagrams.
 
+use super::resolve_width;
 use figo::diagrams::state::{StateDiagram, StateNode, StateType};
 use figo::error::Result;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
 struct StateInput {
+    #[serde(default)]
     width: usize,
     charset: super::JsonCharset,
     states: Vec<StateJson>,
@@ -49,7 +51,7 @@ pub fn run_state(input: &str) -> Result<String> {
         states.push(StateNode { id: s.id, label: s.label, state_type: stype });
     }
 
-    let mut sd = StateDiagram::new(inp.width, charset.into()).color(inp.color);
+    let mut sd = StateDiagram::new(resolve_width(inp.width), charset.into()).color(inp.color);
     for s in states {
         sd = sd.add_state(s);
     }

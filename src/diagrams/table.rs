@@ -130,10 +130,27 @@ impl<'a> Table<'a> {
                     *w += 1;
                 }
             }
+        } else if min_total > self.width {
+            // Content exceeds canvas width: shrink columns proportionally so
+            // the table fits within self.width. Each column gets a share of
+            // the available width based on its min width.
+            let avail_inner = self.width.saturating_sub(pad_per_col * col_count + col_count + 1);
+            let total_min: usize = col_widths.iter().sum();
+            if total_min > 0 {
+                col_widths = col_widths
+                    .iter()
+                    .map(|&w| {
+                        let scaled = w * avail_inner / total_min;
+                        scaled.max(1)
+                    })
+                    .collect();
+            }
         }
 
         let display_width: usize =
             col_widths.iter().sum::<usize>() + pad_per_col * col_count + col_count + 1;
+        // Never exceed the user-specified width.
+        let display_width = display_width.min(self.width);
 
         let all_rows = self.collect_rows(col_count);
         let glyphs = self.border.glyphs(self.charset);
@@ -144,7 +161,7 @@ impl<'a> Table<'a> {
         let sep_lines: usize = if has_sep { 1 } else { 0 };
         let total_height = 1 + data_line_count * (1 + self.padding.vertical * 2) + sep_lines + 1;
 
-        let mut canvas = Canvas::new(display_width.max(self.width), total_height);
+        let mut canvas = Canvas::new(display_width, total_height);
 
         // Outer border
         canvas.draw_rect(0, 0, display_width, total_height, &glyphs)?;

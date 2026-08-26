@@ -1,12 +1,13 @@
 //! Command handler for flowchart diagrams.
 
-use super::{JsonCharset, JsonPosition};
+use super::{JsonCharset, JsonPosition, resolve_width};
 use figo::diagrams::flowchart::{FlowNode, Flowchart, Layout, NodeShape};
 use figo::error::{FigoError, Result};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
 struct FlowchartInput {
+    #[serde(default)]
     width: usize,
     charset: JsonCharset,
     #[serde(default)]
@@ -41,7 +42,7 @@ struct FlowchartConnectionJson {
 
 pub fn run_flowchart(input: &str) -> Result<String> {
     let inp: FlowchartInput = serde_json::from_str(input)?;
-    let mut fc = Flowchart::new(inp.width, inp.charset.into()).color(inp.color);
+    let mut fc = Flowchart::new(resolve_width(inp.width), inp.charset.into()).color(inp.color);
 
     if inp.layout.as_deref() == Some("manual") {
         fc = fc.layout(Layout::Manual);
