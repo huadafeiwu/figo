@@ -273,7 +273,9 @@ impl<'a> SequenceDiagram<'a> {
         self.build()
     }
 
-    /// Draw a 2-row self-message loop to the right of the lifeline.
+    /// Draw a 2-row self-message loop to the right of the lifeline. The
+    /// label is placed above the loop (not on the arrow row) and clamped
+    /// to the canvas width.
     fn draw_self_message(
         canvas: &mut Canvas,
         from_x: usize,
@@ -293,9 +295,15 @@ impl<'a> SequenceDiagram<'a> {
         canvas.put_layered(loop_bot_x, arrow_y + 2, corner_bot_right, Layer::Connector, None);
         canvas.put_layered(from_x, arrow_y + 2, '<', Layer::ConnectorEnd, None);
         canvas.put_horizontal_layered(from_x + 1, arrow_y + 2, 2, h_ch, Layer::Connector);
-        // Multi-line label to the right of the loop.
+        // Multi-line label to the right of the loop, starting above the
+        // arrow row so it never overlaps the loop glyphs.
+        let num_lines = label_lines.len().max(1);
+        let label_start_y = arrow_y.saturating_sub(num_lines);
+        let canvas_w = canvas.width();
         for (i, line) in label_lines.iter().enumerate() {
-            canvas.put_str_layered(loop_top_x + 2, arrow_y + i, line, Layer::Label, None);
+            let line_w = unicode_width::UnicodeWidthStr::width(line.as_str());
+            let lx = (loop_top_x + 2).min(canvas_w.saturating_sub(line_w));
+            canvas.put_str_layered(lx, label_start_y + i, line, Layer::Label, None);
         }
     }
 

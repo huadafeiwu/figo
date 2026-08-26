@@ -202,13 +202,16 @@ impl Connector {
         canvas.put_layered(tgt_right, tgt_cy, head, Layer::ConnectorEnd, None);
         if let Some(label) = &self.label {
             // Place the label in the side corridor, to the right of the
-            // vertical line, wrapped to the user-specified width.
+            // vertical line. Wrap to the remaining canvas width (not
+            // user_width, because route_x may be past user_width when
+            // the canvas was widened for node boxes).
             let lx = route_x + 1;
-            let avail =
-                self.user_width.unwrap_or_else(|| canvas.width()).saturating_sub(lx).max(10);
+            let avail = canvas_w.saturating_sub(lx).max(10);
             let (lines, _, _) = crate::text::wrap_label(label, avail);
             for (i, line) in lines.iter().enumerate() {
-                canvas.put_str_layered(lx, src_cy + i, line, Layer::Label, None);
+                let line_w = UnicodeWidthStr::width(line.as_str());
+                let clamped_lx = lx.min(canvas_w.saturating_sub(line_w));
+                canvas.put_str_layered(clamped_lx, src_cy + i, line, Layer::Label, None);
             }
         }
     }

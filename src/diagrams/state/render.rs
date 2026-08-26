@@ -110,9 +110,13 @@ impl<'a> StateDiagram<'a> {
                 if row > 0 { if fwd { from_cx } else { to_cx } } else { (from_cx + to_cx) / 2 };
             // Use the wrapped max line width (not the full label width) for
             // sizing, since long labels are now wrapped to corridor width.
-            let corridor_w =
-                if from_cx != to_cx { from_cx.abs_diff(to_cx) + 1 } else { self.width };
-            let avail = corridor_w.max(10);
+            // For same-column, mirror draw_external_transition's avail logic.
+            let corridor_w = if from_cx != to_cx {
+                from_cx.abs_diff(to_cx) + 1
+            } else {
+                total_w.saturating_sub(from_cx + 2)
+            };
+            let avail = corridor_w.max(2);
             let (_, _, max_lw) = crate::text::wrap_label(text, avail);
             let lw = max_lw;
             let lx = base_x.saturating_sub(lw / 2);
@@ -328,13 +332,14 @@ fn expand_corridors_for_labels(
         if needed <= corridor_w {
             continue;
         }
-        // Cap the expansion so the layout doesn't exceed canvas_width.
-        let max_needed = canvas_width.min(needed);
-        if max_needed <= corridor_w {
-            continue;
-        }
-
-        let extra = (max_needed - corridor_w) as isize;
+        // Cap the expansion to avoid excessive layout distortion. When the
+        // corridor is very narrow (e.g. near-column transitions) and the label
+        // is much wider, expanding by the full amount pushes states far off
+        // center. Cap the extra to half the label width — the label will wrap
+        // within the widened (but not over-widened) corridor.
+        let max_extra = lw / 2;
+        let raw_extra = needed - corridor_w;
+        let extra = raw_extra.min(max_extra).min(canvas_width);
 
         // When `to` is to the right of `from`, shift `to` (and same-y peers
         // to its right) rightward to widen the corridor.
@@ -346,7 +351,7 @@ fn expand_corridors_for_labels(
             let x = layouts[to_idx].rect.x;
             for layout in layouts.iter_mut() {
                 if layout.rect.y == y && layout.rect.x >= x {
-                    layout.rect.x += extra as usize;
+                    layout.rect.x += extra;
                 }
             }
         } else {
@@ -354,7 +359,7 @@ fn expand_corridors_for_labels(
             let x = layouts[from_idx].rect.x;
             for layout in layouts.iter_mut() {
                 if layout.rect.y == y && layout.rect.x >= x {
-                    layout.rect.x += extra as usize;
+                    layout.rect.x += extra;
                 }
             }
         }
@@ -562,7 +567,7 @@ fn draw_transitions(
         let Some(to) = id_to_layout.get(&t.to) else { continue };
 
         if t.from == t.to {
-            draw_self_loop(surface, from.rect, ctx);
+            draw_self_loop(surface, from.rect, t.label.as_deref(), ctx, canvas_width);
             continue;
         }
 
@@ -727,7 +732,13 @@ fn draw_external_transition(
     }
 }
 
-fn draw_self_loop(surface: &mut Surface<'_>, rect: Rect, ctx: &PaintContext) {
+fn draw_self_loop(
+    surface: &mut Surface<'_>,
+    rect: Rect,
+    label: Option<&str>,
+    ctx: &PaintContext,
+    canvas_width: usize,
+) {
     let glyphs = BorderStyle::Single.glyphs(ctx.charset);
     let loop_x = rect.x + rect.w + 1;
     let top = rect.y;
@@ -749,4 +760,16 @@ fn draw_self_loop(surface: &mut Surface<'_>, rect: Rect, ctx: &PaintContext) {
     surface.put_layered(loop_x, bot, bottom_right, Layer::Connector);
 
     surface.put_layered(rect.x + rect.w, mid, '<', Layer::ConnectorEnd);
+
+    // Draw the label to the right of the loop, wrapped to the remaining
+    // canvas width.
+    if let Some(text) = label {
+        let avail = canvas_width.saturating_sub(loop_x + 2).max(10);
+        let (lines, _, _) = crate::text::wrap_label(text, avail);
+        for (i, line) in lines.iter().enumerate() {
+            let lw = UnicodeWidthStr::width(line.as_str());
+            let lx = (loop_x + 2).min(canvas_width.saturating_sub(lw));
+            surface.put_str_layered(lx, top + i, line, Layer::Label);
+        }
+    }
 }
