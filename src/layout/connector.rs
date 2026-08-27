@@ -321,7 +321,14 @@ impl Connector {
             let block_top = if downward { sy + 1 } else { sy.saturating_sub(n) };
             for (i, line) in lines.iter().enumerate() {
                 let line_w = UnicodeWidthStr::width(line.as_str());
-                let lx = (sx + 1).min(w_limit.saturating_sub(line_w));
+                // Place the label to the right of the line when there is
+                // room; otherwise to the left so it never covers `|`.
+                let right_x = (sx + 1).min(w_limit.saturating_sub(line_w));
+                let lx = if right_x > sx {
+                    right_x
+                } else {
+                    sx.saturating_sub(line_w)
+                };
                 canvas.put_str_layered(lx, block_top + i, line, Layer::Label, None);
             }
 

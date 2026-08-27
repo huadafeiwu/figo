@@ -339,21 +339,33 @@ fn shift_layouts(layouts: &mut [StateLayout], dy: usize) {
 /// Recenter each layer's states horizontally within `canvas_width`.
 /// Groups states by their y coordinate, finds the layer's content bounds,
 /// and shifts them so the content is centered.
+///
+/// For single-state layers, center the box on `canvas_width / 2` directly
+/// so that all single-column states share the same center column regardless
+/// of their individual widths (prevents integer-division misalignment
+/// between odd/even-width boxes in vertical transitions).
 fn recenter_layouts(layouts: &mut [StateLayout], canvas_width: usize) {
     use std::collections::HashMap;
     let mut y_groups: HashMap<usize, Vec<usize>> = HashMap::new();
     for (i, l) in layouts.iter().enumerate() {
         y_groups.entry(l.rect.y).or_default().push(i);
     }
+    let center = canvas_width / 2;
     for indices in y_groups.values() {
-        let min_x = indices.iter().map(|&i| layouts[i].rect.x).min().unwrap_or(0);
-        let max_right = indices.iter().map(|&i| layouts[i].rect.right()).max().unwrap_or(0);
-        let content_w = max_right.saturating_sub(min_x);
-        let target_start = canvas_width.saturating_sub(content_w) / 2;
-        let shift = target_start as isize - min_x as isize;
-        if shift != 0 {
-            for &i in indices {
-                layouts[i].rect.x = (layouts[i].rect.x as isize + shift).max(0) as usize;
+        if indices.len() == 1 {
+            let i = indices[0];
+            let w = layouts[i].rect.w;
+            layouts[i].rect.x = center.saturating_sub(w / 2);
+        } else {
+            let min_x = indices.iter().map(|&i| layouts[i].rect.x).min().unwrap_or(0);
+            let max_right = indices.iter().map(|&i| layouts[i].rect.right()).max().unwrap_or(0);
+            let content_w = max_right.saturating_sub(min_x);
+            let target_start = canvas_width.saturating_sub(content_w) / 2;
+            let shift = target_start as isize - min_x as isize;
+            if shift != 0 {
+                for &i in indices {
+                    layouts[i].rect.x = (layouts[i].rect.x as isize + shift).max(0) as usize;
+                }
             }
         }
     }
@@ -793,9 +805,16 @@ fn draw_external_transition(
         let base_x =
             if row > 0 { if forward { from_cx } else { to_cx } } else { (from_cx + to_cx) / 2 };
 
-        // Center the multi-line block on effective_route_y.
+        // Center the multi-line block on effective_route_y. When the label
+        // is NOT embedded (corridor too narrow) but a horizontal corridor
+        // exists, offset the label above the corridor row so it doesn't
+        // cover the `---` line.
         let block_top = if row == 0 {
-            effective_route_y.saturating_sub(num_lines / 2)
+            if !embed_in_corridor && corridor_w > 0 {
+                effective_route_y.saturating_sub(num_lines)
+            } else {
+                effective_route_y.saturating_sub(num_lines / 2)
+            }
         } else {
             effective_route_y.saturating_sub(row * 3).saturating_sub(num_lines / 2)
         };
@@ -813,9 +832,9 @@ fn draw_external_transition(
             let label_y = block_top + i;
             surface.put_str_layered(label_x, label_y, line, Layer::Label);
 
-            // Restore corridor `---` on both sides of the label only when
-            // the label is embedded in the corridor.
-            if embed_in_corridor {
+            // Restore corridor `---` on both sides of the label whenever
+            // there is a horizontal corridor (embedded or not).
+            if corridor_w > 0 {
                 let label_end = label_x + lw;
                 if label_x > left_x {
                     surface.put_horizontal(

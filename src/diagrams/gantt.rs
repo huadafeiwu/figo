@@ -242,11 +242,18 @@ impl GanttChart {
             row += lines_drawn;
         }
 
-        // Today marker
+        // Today marker — drawn at Layer::Label so it stays visible across
+        // task bars (Layer::NodeContent) and time-scale labels.
         if let Some(today_off) = self.today_offset {
             let today_x = chart_start + today_off * col_per_unit;
             if today_x < chart_start + chart_width {
-                canvas.put_vertical(today_x, 1, total_height - 2, glyphs.vertical);
+                canvas.put_vertical_layered(
+                    today_x,
+                    1,
+                    total_height - 2,
+                    glyphs.vertical,
+                    Layer::Label,
+                );
             }
         }
 
