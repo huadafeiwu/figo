@@ -293,49 +293,75 @@ impl Connector {
         build_three_segment(sx, sy, tx, ty, safe_y)
     }
 
-    /// Place the label so it does NOT overlap the connector line. Long
-    /// labels are wrapped to the available width (bounded by `user_width`)
-    /// and stacked vertically.
+    /// Place the label embedded in the corridor line. Long labels are
+    /// wrapped to the corridor width and the corridor `---` is restored
+    /// on both sides. For purely vertical connectors, the label sits
+    /// beside the line and `|` is restored above/below.
     fn draw_label(&self, canvas: &mut Canvas, label: &str, path: &[Segment]) {
         use crate::text::wrap_label;
         let (sx, sy) = self.source;
-        let (tx, _ty) = self.target;
+        let (tx, ty) = self.target;
         let mid_x = (sx + tx) / 2;
         let w_limit = self.user_width.unwrap_or_else(|| canvas.width());
+        let h_ch = horizontal_line_glyph(self.style, self.charset);
+        let v_ch = vertical_line_glyph(self.style, self.charset);
 
         let has_h = path.iter().any(|s| matches!(s, Segment::H { .. }));
         if !has_h {
-            // Purely vertical: label just below the source so it is clear
-            // which branch it belongs to. Wrap to the remaining width.
+            // Purely vertical: label beside the line at sy+1, `|` restored
+            // above and below the label block.
             let avail = w_limit.saturating_sub(sx + 2).max(2).min(w_limit);
             let (lines, n, _) = wrap_label(label, avail);
+            // Restore | above the label block.
+            for ly in sy..sy + 1 {
+                canvas.put_layered(sx, ly, v_ch, Layer::Connector, None);
+            }
             for (i, line) in lines.iter().enumerate() {
                 let line_w = UnicodeWidthStr::width(line.as_str());
                 let lx = (sx + 1).min(w_limit.saturating_sub(line_w));
                 canvas.put_str_layered(lx, sy + 1 + i, line, Layer::Label, None);
             }
-            let _ = n;
+            // Restore | below the label block.
+            let after_y = sy + 1 + n;
+            for ly in after_y..=ty {
+                canvas.put_layered(sx, ly, v_ch, Layer::Connector, None);
+            }
             return;
         }
         if let Some(&Segment::H { x, y, len }) =
             path.iter().find(|s| matches!(s, Segment::H { .. }))
         {
-            // Horizontal corridor: label one row above it, pinned no higher
-            // than the source row so sibling labels line up.
+            // Horizontal corridor: label embedded IN the corridor line (y),
+            // with `---` restored on both sides.
             let center = if sx != tx { mid_x } else { x + len / 2 };
-            let avail = len.min(w_limit).max(2);
-            let (lines, n, max_lw) = wrap_label(label, avail);
+            // Wrap to corridor width minus 4 (left/right `---` padding).
+            let avail = len.saturating_sub(4).max(2).min(w_limit);
+            let (lines, n, _) = wrap_label(label, avail);
+            let block_top = y.saturating_sub(n / 2);
             for (i, line) in lines.iter().enumerate() {
                 let line_w = UnicodeWidthStr::width(line.as_str());
                 let base_x = center.saturating_sub(line_w / 2).max(x);
                 let lx = base_x.min((x + len).saturating_sub(line_w)).max(x);
-                let label_y = y.saturating_sub(n).saturating_add(i).max(sy);
+                let label_y = (block_top + i).max(sy).min(ty);
                 canvas.put_str_layered(lx, label_y, line, Layer::Label, None);
+                // Restore --- on both sides.
+                let label_end = lx + line_w;
+                if lx > x {
+                    canvas.put_horizontal_layered(x, label_y, lx - x, h_ch, Layer::Connector);
+                }
+                if label_end <= x + len {
+                    canvas.put_horizontal_layered(
+                        label_end,
+                        label_y,
+                        (x + len).saturating_sub(label_end) + 1,
+                        h_ch,
+                        Layer::Connector,
+                    );
+                }
             }
-            let _ = max_lw;
             return;
         }
-        // Same-row horizontal fallback: one row above.
+        // Same-row horizontal fallback.
         let avail = w_limit.saturating_sub(mid_x).max(2).min(w_limit);
         let (lines, _, _) = wrap_label(label, avail);
         for (i, line) in lines.iter().enumerate() {
