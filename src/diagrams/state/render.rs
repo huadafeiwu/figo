@@ -681,25 +681,35 @@ fn draw_external_transition(
     // Horizontal corridor in the gap between the two anchor points.
     let route_y = (from_anchor + to_anchor) / 2;
 
+    // Horizontal corridor endpoints.
+    let (left_x, right_x) = if from_cx < to_cx { (from_cx, to_cx) } else { (to_cx, from_cx) };
+
     // Check if route_y falls inside another state's box (not from/to).
     // If so, push the corridor to the nearest empty row above the box
-    // so the label sits on a corridor line, not on top of box content.
+    // and clamp the corridor's horizontal range to the box's boundaries
+    // so the corridor doesn't spill out beside the box.
     let mut effective_route_y = route_y;
+    let mut effective_left_x = left_x;
+    let mut effective_right_x = right_x;
     for layout in all_layouts {
         let r = &layout.rect;
         if r == &from || r == &to {
             continue;
         }
-        if effective_route_y >= r.y && effective_route_y < r.bottom() {
-            // Check x overlap: corridor vs box.
-            if from_cx.min(to_cx) <= r.right() && from_cx.max(to_cx) >= r.x {
-                if r.y > 0 {
-                    effective_route_y = r.y.saturating_sub(1);
-                } else {
-                    effective_route_y = r.bottom();
-                }
-                break;
+        if effective_route_y >= r.y
+            && effective_route_y < r.bottom()
+            && from_cx.min(to_cx) <= r.right()
+            && from_cx.max(to_cx) >= r.x
+        {
+            if r.y > 0 {
+                effective_route_y = r.y.saturating_sub(1);
+            } else {
+                effective_route_y = r.bottom();
             }
+            // Clamp corridor horizontal range to the box boundaries.
+            effective_left_x = effective_left_x.max(r.x);
+            effective_right_x = effective_right_x.min(r.right().saturating_sub(1));
+            break;
         }
     }
 
@@ -717,13 +727,12 @@ fn draw_external_transition(
     surface.put_vertical(from_cx, from_start, from_len, glyphs.vertical, Layer::Connector);
     surface.put_vertical(to_cx, to_start, to_len, glyphs.vertical, Layer::Connector);
 
-    // Horizontal corridor connecting the two vertical legs.
-    let (left_x, right_x) = if from_cx < to_cx { (from_cx, to_cx) } else { (to_cx, from_cx) };
-    if right_x > left_x {
+    // Horizontal corridor connecting the two vertical legs (clamped to box).
+    if effective_right_x > effective_left_x {
         surface.put_horizontal(
-            left_x,
+            effective_left_x,
             effective_route_y,
-            right_x - left_x + 1,
+            effective_right_x - effective_left_x + 1,
             glyphs.horizontal,
             Layer::Connector,
         );
@@ -740,16 +749,23 @@ fn draw_external_transition(
     surface.put_layered(to_cx, arrow_y, arrow_ch, Layer::ConnectorEnd);
 
     // Label embedded in the corridor/vertical line (replaces a segment).
-    // row 0: label sits on route_y (the corridor/line itself).
+    // row 0: label sits on effective_route_y (the corridor/line itself).
     // row > 0: label sits above to avoid x overlap with another label.
     if let Some(text) = label {
         use crate::text::wrap_label;
 
-        // Determine available width for wrapping. Use the corridor width
-        // (or remaining canvas width for same-column). wrap_label returns
-        // a single line when the label fits, so short labels stay unwrapped.
-        let avail = if right_x > left_x {
-            (right_x - left_x + 1).max(2)
+        let corridor_w = if effective_right_x > effective_left_x {
+            effective_right_x - effective_left_x + 1
+        } else {
+            0
+        };
+
+        // Wrap label to corridor width (minus 4 for left/right `---` padding).
+        // For same-column (no corridor), use remaining canvas width.
+        let avail = if corridor_w > 4 {
+            corridor_w - 4
+        } else if corridor_w > 0 {
+            corridor_w.max(2)
         } else {
             canvas_width.saturating_sub(from_cx + 2).max(2)
         };
@@ -775,31 +791,31 @@ fn draw_external_transition(
             let mut label_x = base_x.saturating_sub(lw / 2);
             // Right-edge clamp.
             label_x = label_x.min(canvas_width.saturating_sub(lw));
-            // Corridor clamping for all rows — keep label within corridor.
-            if right_x > left_x && lw < right_x - left_x + 1 {
-                label_x = label_x.max(left_x).min(right_x + 1 - lw);
+            // Corridor clamping — keep label within corridor for all rows.
+            if corridor_w > 0 && lw < corridor_w {
+                label_x = label_x.max(effective_left_x).min(effective_right_x + 1 - lw);
             }
             let label_y = block_top + i;
             surface.put_str_layered(label_x, label_y, line, Layer::Label);
 
-            // Restore corridor line on both sides of the label so it stays
-            // connected (label only replaces the segment it occupies).
-            if label_y == effective_route_y && right_x > left_x {
+            // Restore corridor `---` on both sides of the label on every
+            // label row where there is a horizontal corridor.
+            if corridor_w > 0 {
                 let label_end = label_x + lw;
-                if label_x > left_x {
+                if label_x > effective_left_x {
                     surface.put_horizontal(
-                        left_x,
-                        route_y,
-                        label_x - left_x,
+                        effective_left_x,
+                        label_y,
+                        label_x - effective_left_x,
                         glyphs.horizontal,
                         Layer::Connector,
                     );
                 }
-                if label_end < right_x {
+                if label_end <= effective_right_x {
                     surface.put_horizontal(
                         label_end,
-                        route_y,
-                        right_x - label_end + 1,
+                        label_y,
+                        effective_right_x - label_end + 1,
                         glyphs.horizontal,
                         Layer::Connector,
                     );
@@ -812,11 +828,11 @@ fn draw_external_transition(
         if row > 0 {
             let vcol = if forward { from_cx } else { to_cx };
             let top_y = if forward { from_anchor } else { to_anchor };
-            let leg_top = top_y.min(route_y);
+            let leg_top = top_y.min(effective_route_y);
             for ly in leg_top..block_top {
                 surface.put_layered(vcol, ly, glyphs.vertical, Layer::Connector);
             }
-            for ly in (block_top + num_lines)..=route_y {
+            for ly in (block_top + num_lines)..=effective_route_y {
                 surface.put_layered(vcol, ly, glyphs.vertical, Layer::Connector);
             }
         }
