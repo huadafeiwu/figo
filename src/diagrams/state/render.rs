@@ -681,29 +681,38 @@ fn draw_external_transition(
     // Horizontal corridor in the gap between the two anchor points.
     let route_y = (from_anchor + to_anchor) / 2;
 
-    // Horizontal corridor endpoints.
+    // Horizontal corridor endpoints, clamped to canvas bounds.
     let (left_x, right_x) = if from_cx < to_cx { (from_cx, to_cx) } else { (to_cx, from_cx) };
+    let right_x = right_x.min(canvas_width.saturating_sub(1));
 
-    // Check if route_y falls inside another state's box (not from/to).
-    // If so, push the corridor to the nearest empty row above the box.
-    // The corridor stays at its original horizontal range (from_cx to to_cx)
-    // because the box is below the corridor, not beside it.
+    // Repeatedly check if effective_route_y falls inside another state's
+    // box (not from/to). Push the corridor to the nearest empty row above
+    // the box (or below if the box is at the top), then re-scan because
+    // the new row may itself land on another box. Bounded by the number
+    // of layouts to guarantee termination.
     let mut effective_route_y = route_y;
-    for layout in all_layouts {
-        let r = &layout.rect;
-        if r == &from || r == &to {
-            continue;
-        }
-        if effective_route_y >= r.y
-            && effective_route_y < r.bottom()
-            && from_cx.min(to_cx) <= r.right()
-            && from_cx.max(to_cx) >= r.x
-        {
-            if r.y > 0 {
-                effective_route_y = r.y.saturating_sub(1);
-            } else {
-                effective_route_y = r.bottom();
+    for _ in 0..=all_layouts.len() {
+        let mut pushed = false;
+        for layout in all_layouts {
+            let r = &layout.rect;
+            if r == &from || r == &to {
+                continue;
             }
+            if effective_route_y >= r.y
+                && effective_route_y < r.bottom()
+                && from_cx.min(to_cx) <= r.right()
+                && from_cx.max(to_cx) >= r.x
+            {
+                if r.y > 0 {
+                    effective_route_y = r.y.saturating_sub(1);
+                } else {
+                    effective_route_y = r.bottom();
+                }
+                pushed = true;
+                break;
+            }
+        }
+        if !pushed {
             break;
         }
     }

@@ -293,20 +293,49 @@ impl Canvas {
     }
 
     fn repair_ascii_junctions(&mut self) {
+        // First pass: convert cells where horizontal and vertical segments
+        // meet into '+'.
         for y in 0..self.height {
             for x in 0..self.width {
                 if !self.is_connector_line(x, y) {
                     continue;
                 }
                 let dirs = self.connector_directions(x, y);
-                // Only convert to '+' where horizontal and vertical segments
-                // actually meet (corners, tees, crosses). Straight runs must
-                // keep their '-' or '|' glyph.
                 if dirs.count() >= 2 && (dirs.e || dirs.w) && (dirs.n || dirs.s) {
                     self.put_layered(x, y, '+', Layer::Connector, None);
                 }
             }
         }
+        // Second pass: break up horizontal '+' runs caused by narrow
+        // corridors (from_cx and to_cx only 1-2 cells apart). Every cell
+        // in such a corridor has both horizontal and vertical neighbours,
+        // turning the entire corridor into '++' or '+++'. Restore every
+        // other '+' to '-' so the corridor direction stays visible:
+        // '++' → '+-', '+++' → '+-+'.
+        for y in 0..self.height {
+            let mut x = 0;
+            while x < self.width {
+                if !self.is_plus_at_connector(x, y) {
+                    x += 1;
+                    continue;
+                }
+                let run_start = x;
+                while x < self.width && self.is_plus_at_connector(x, y) {
+                    x += 1;
+                }
+                let run_len = x - run_start;
+                if run_len >= 2 {
+                    for i in (1..run_len).step_by(2) {
+                        self.put_layered(run_start + i, y, '-', Layer::Connector, None);
+                    }
+                }
+            }
+        }
+    }
+
+    fn is_plus_at_connector(&self, x: usize, y: usize) -> bool {
+        let Some(cell) = self.cell(x, y) else { return false };
+        cell.layer == Layer::Connector && cell.ch == '+'
     }
 
     fn repair_unicode_junctions(&mut self, style: LineStyle) {
@@ -518,5 +547,22 @@ mod tests {
         c.put_vertical_layered(2, 0, 5, '|', Layer::Connector);
         c.repair_connector_junctions(LineStyle::Simple, Charset::Ascii);
         assert_eq!(c.cell_char(2, 2), Some('+'));
+    }
+
+    #[test]
+    fn repair_breaks_plus_runs_in_narrow_corridor() {
+        // Narrow 2-cell corridor: vertical legs at x=1 and x=2, horizontal
+        // corridor at y=2. Without the fix both cells become '+' (++) .
+        let mut c = Canvas::new(4, 5);
+        c.put_vertical_layered(1, 0, 5, '|', Layer::Connector);
+        c.put_vertical_layered(2, 0, 5, '|', Layer::Connector);
+        c.put_horizontal_layered(1, 2, 2, '-', Layer::Connector);
+        c.repair_connector_junctions(LineStyle::Simple, Charset::Ascii);
+        let rendered = c.render(false);
+        let row = rendered.lines().nth(2).unwrap();
+        assert!(
+            !row.contains("++"),
+            "narrow corridor should not produce ++, got: {row:?}"
+        );
     }
 }

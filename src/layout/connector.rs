@@ -308,22 +308,25 @@ impl Connector {
 
         let has_h = path.iter().any(|s| matches!(s, Segment::H { .. }));
         if !has_h {
-            // Purely vertical: label beside the line at sy+1, `|` restored
-            // above and below the label block.
+            // Purely vertical: label beside the line. For downward flow
+            // (sy < ty) the label sits just below the source; for upward
+            // flow (sy > ty) it sits just above the source so it stays
+            // within the line segment [ty, sy]. The `|` is restored on
+            // the full segment — the Label layer covers it visually where
+            // the label text sits.
             let avail = w_limit.saturating_sub(sx + 2).max(2).min(w_limit);
             let (lines, n, _) = wrap_label(label, avail);
-            // Restore | above the label block.
-            for ly in sy..sy + 1 {
-                canvas.put_layered(sx, ly, v_ch, Layer::Connector, None);
-            }
+
+            let downward = sy <= ty;
+            let block_top = if downward { sy + 1 } else { sy.saturating_sub(n) };
             for (i, line) in lines.iter().enumerate() {
                 let line_w = UnicodeWidthStr::width(line.as_str());
                 let lx = (sx + 1).min(w_limit.saturating_sub(line_w));
-                canvas.put_str_layered(lx, sy + 1 + i, line, Layer::Label, None);
+                canvas.put_str_layered(lx, block_top + i, line, Layer::Label, None);
             }
-            // Restore | below the label block.
-            let after_y = sy + 1 + n;
-            for ly in after_y..=ty {
+
+            let (lo, hi) = if downward { (sy, ty) } else { (ty, sy) };
+            for ly in lo..=hi {
                 canvas.put_layered(sx, ly, v_ch, Layer::Connector, None);
             }
             return;
@@ -442,5 +445,38 @@ mod tests {
             Charset::Unicode,
         );
         assert_eq!(c.arrow_head, '↑');
+    }
+
+    #[test]
+    fn vertical_label_upward_flow_stays_on_line() {
+        // Source below target: upward flow (sy > ty). The label must
+        // appear beside the line segment (between ty and sy), not below
+        // the source.
+        let src = Rect::new(0, 8, 4, 3);
+        let tgt = Rect::new(0, 0, 4, 3);
+        let mut c = Connector::new(
+            src,
+            tgt,
+            Anchor::North,
+            Anchor::South,
+            LineStyle::Simple,
+            Charset::Ascii,
+        );
+        c.label = Some("test".to_string());
+        c.user_width = Some(40);
+
+        let mut canvas = Canvas::new(40, 12);
+        c.render(&mut canvas);
+        let out = canvas.render(false);
+
+        assert!(out.contains("test"), "label should be visible:\n{out}");
+        assert!(out.contains('|'), "vertical line should be visible:\n{out}");
+
+        // The label should not appear below the source row (y >= 9).
+        let below: String = out.lines().skip(9).collect::<Vec<_>>().join("\n");
+        assert!(
+            !below.contains("test"),
+            "label should not appear below source:\n{out}"
+        );
     }
 }
