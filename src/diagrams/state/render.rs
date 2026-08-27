@@ -752,15 +752,10 @@ fn draw_external_transition(
         let corridor_w = if right_x > left_x { right_x - left_x + 1 } else { 0 };
 
         // Wrap label to corridor width (minus 4 for left/right `---` padding).
-        // For same-column (no corridor), use remaining canvas width.
-        let label_full_w = text.width();
-        // Only embed label in the corridor if the corridor is wide enough
-        // to fit the full label + 4 cells of `---` padding on each side.
-        // Otherwise, place the label beside the vertical line (above the
-        // corridor) to avoid `+++` artifacts from narrow corridors.
-        let embed_in_corridor = corridor_w > 0 && label_full_w + 4 <= corridor_w;
-
-        let avail = if embed_in_corridor {
+        // Wrap label to corridor width minus 4 (left/right `---` padding).
+        // expand_corridors_for_labels already widened the corridor as much
+        // as possible; if still too narrow, the label wraps to fit.
+        let avail = if corridor_w > 4 {
             corridor_w - 4
         } else if corridor_w > 0 {
             corridor_w.max(2)
@@ -773,26 +768,14 @@ fn draw_external_transition(
         // row 0: label on corridor (center of from_cx/to_cx).
         // row>0: label on the vertical leg that exists above route_y:
         //   forward → from-leg (from_cx), reverse → to-leg (to_cx).
-        // When not embedding in corridor, place label above the corridor
-        // (like the old behavior) so the corridor `---` stays intact.
-        let base_x = if !embed_in_corridor {
-            // Label beside the vertical line, not in the corridor.
-            if forward { from_cx } else { to_cx }
-        } else if row > 0 {
-            if forward { from_cx } else { to_cx }
-        } else {
-            (from_cx + to_cx) / 2
-        };
+        let base_x =
+            if row > 0 { if forward { from_cx } else { to_cx } } else { (from_cx + to_cx) / 2 };
 
-        // Center the multi-line block. When embedded, center on the corridor
-        // row. When not embedded, place above the corridor.
-        let block_top = if embed_in_corridor && row == 0 {
+        // Center the multi-line block on effective_route_y.
+        let block_top = if row == 0 {
             effective_route_y.saturating_sub(num_lines / 2)
-        } else if row > 0 {
-            effective_route_y.saturating_sub(row * 3).saturating_sub(num_lines / 2)
         } else {
-            // Not embedded: label above corridor, centered on vertical leg.
-            effective_route_y.saturating_sub(num_lines)
+            effective_route_y.saturating_sub(row * 3).saturating_sub(num_lines / 2)
         };
 
         for (i, line) in lines.iter().enumerate() {
@@ -800,16 +783,16 @@ fn draw_external_transition(
             let mut label_x = base_x.saturating_sub(lw / 2);
             // Right-edge clamp.
             label_x = label_x.min(canvas_width.saturating_sub(lw));
-            // Corridor clamping — only when embedded in corridor.
-            if embed_in_corridor && corridor_w > 0 && lw < corridor_w {
+            // Corridor clamping — keep label within corridor.
+            if corridor_w > 0 && lw < corridor_w {
                 label_x = label_x.max(left_x).min(right_x + 1 - lw);
             }
             let label_y = block_top + i;
             surface.put_str_layered(label_x, label_y, line, Layer::Label);
 
-            // Restore corridor `---` on both sides of the label, only when
-            // the label is actually on the corridor row.
-            if embed_in_corridor && corridor_w > 0 {
+            // Restore corridor `---` on both sides of the label on every
+            // label row where there is a horizontal corridor.
+            if corridor_w > 0 {
                 let label_end = label_x + lw;
                 if label_x > left_x {
                     surface.put_horizontal(
