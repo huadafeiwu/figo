@@ -145,6 +145,7 @@ impl<'a> StateDiagram<'a> {
                 &label_rows,
                 &ctx,
                 total_w,
+                &layouts,
             );
         }
 
@@ -624,6 +625,7 @@ fn draw_transitions(
     label_rows: &HashMap<usize, usize>,
     ctx: &PaintContext,
     canvas_width: usize,
+    layouts: &[StateLayout],
 ) {
     for (idx, t) in transitions.iter().enumerate() {
         let Some(from) = id_to_layout.get(&t.from) else { continue };
@@ -643,10 +645,12 @@ fn draw_transitions(
             row,
             ctx,
             canvas_width,
+            layouts,
         );
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_external_transition(
     surface: &mut Surface<'_>,
     from: Rect,
@@ -655,6 +659,7 @@ fn draw_external_transition(
     row: usize,
     ctx: &PaintContext,
     canvas_width: usize,
+    all_layouts: &[StateLayout],
 ) {
     let glyphs = BorderStyle::Single.glyphs(ctx.charset);
     let from_cx = from.x + from.w / 2;
@@ -729,17 +734,48 @@ fn draw_external_transition(
 
         let (lines, num_lines, _) = wrap_label(text, avail);
 
+        // Check if the label's route_y falls inside another state's box
+        // (not from/to). If so, push the label to the nearest empty row
+        // above or below the box to avoid covering its content.
+        let mut effective_route_y = route_y;
+        if row == 0 {
+            for layout in all_layouts {
+                let r = &layout.rect;
+                // Skip from and to boxes.
+                if r == &from || r == &to {
+                    continue;
+                }
+                // Check if route_y is inside this box (same column range).
+                if effective_route_y >= r.y && effective_route_y < r.bottom() {
+                    // Check x overlap: label corridor vs box.
+                    let box_cx = r.x + r.w / 2;
+                    if (from_cx.min(to_cx)) <= r.right() && (from_cx.max(to_cx)) >= r.x {
+                        // Label corridor overlaps this box. Push label up
+                        // to just above the box.
+                        let _ = box_cx;
+                        if r.y > 0 {
+                            effective_route_y = r.y.saturating_sub(1);
+                        } else {
+                            effective_route_y = r.bottom();
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
         // row 0: label on corridor (center of from_cx/to_cx).
         // row>0: label on the vertical leg that exists above route_y:
         //   forward → from-leg (from_cx), reverse → to-leg (to_cx).
         let base_x =
             if row > 0 { if forward { from_cx } else { to_cx } } else { (from_cx + to_cx) / 2 };
 
-        // Center the multi-line block on route_y (row 0) or route_y - row*3 (row>0).
+        // Center the multi-line block on effective_route_y (row 0) or
+        // effective_route_y - row*3 (row>0).
         let block_top = if row == 0 {
-            route_y.saturating_sub(num_lines / 2)
+            effective_route_y.saturating_sub(num_lines / 2)
         } else {
-            route_y.saturating_sub(row * 3).saturating_sub(num_lines / 2)
+            effective_route_y.saturating_sub(row * 3).saturating_sub(num_lines / 2)
         };
 
         for (i, line) in lines.iter().enumerate() {
@@ -756,7 +792,7 @@ fn draw_external_transition(
 
             // Restore corridor line on both sides of the label so it stays
             // connected (label only replaces the segment it occupies).
-            if label_y == route_y && right_x > left_x {
+            if label_y == effective_route_y && right_x > left_x {
                 let label_end = label_x + lw;
                 if label_x > left_x {
                     surface.put_horizontal(
