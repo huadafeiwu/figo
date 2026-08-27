@@ -262,6 +262,15 @@ fn compute_label_rows(
         } else {
             (to.rect.y, from.rect.y)
         };
+        // Skip duplicate labels (same text + same gap) — only render the
+        // first occurrence to avoid showing the same label twice.
+        let is_dup = labels.iter().any(|l| {
+            l.gap_key == gap_key
+                && transitions[l.transition_index].label.as_deref().is_some_and(|prev| prev == text)
+        });
+        if is_dup {
+            continue;
+        }
         labels.push(LabelInfo {
             transition_index: idx,
             x: label_x,

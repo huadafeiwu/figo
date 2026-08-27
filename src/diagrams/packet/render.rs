@@ -186,13 +186,18 @@ pub(super) fn write_centered_label(
     if inner_w == 0 {
         return;
     }
-    // Never truncate — wrap to multiple lines instead.
-    let (lines, _, _) = crate::text::wrap_label(name, inner_w.max(2));
-    for (i, line) in lines.iter().enumerate() {
-        let lw = unicode_width::UnicodeWidthStr::width(line.as_str());
-        let pad = inner_w.saturating_sub(lw) / 2;
-        canvas.put_str_layered(inner_left + pad, y + i, line, Layer::NodeContent, None);
-    }
+    // name is already a pre-wrapped single line from draw_middle_row_wrapped.
+    // Center it within inner_w and pad with spaces so it never overflows
+    // into the next field's border.
+    let lw = unicode_width::UnicodeWidthStr::width(name);
+    let pad = inner_w.saturating_sub(lw) / 2;
+    let display = if lw < inner_w {
+        let right_pad = inner_w - lw - pad;
+        format!("{}{}{}", " ".repeat(pad), name, " ".repeat(right_pad))
+    } else {
+        name.to_string()
+    };
+    canvas.put_str_layered(inner_left, y, &display, Layer::NodeContent, None);
 }
 
 /// Pick the right border glyph given wall directions and edge position.

@@ -110,7 +110,7 @@ impl Tree {
         lines.push(format!("{prefix}{marker} {first_line}"));
 
         // Continuation lines indented to align under the label text.
-        let indent = format!("{}{}  ", prefix, " ".repeat(marker.chars().count()));
+        let indent = format!("{}{} ", prefix, " ".repeat(marker.chars().count()));
         for cont in wrapped.iter().skip(1) {
             lines.push(format!("{indent}{cont}"));
         }
