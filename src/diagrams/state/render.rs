@@ -685,12 +685,10 @@ fn draw_external_transition(
     let (left_x, right_x) = if from_cx < to_cx { (from_cx, to_cx) } else { (to_cx, from_cx) };
 
     // Check if route_y falls inside another state's box (not from/to).
-    // If so, push the corridor to the nearest empty row above the box
-    // and clamp the corridor's horizontal range to the box's boundaries
-    // so the corridor doesn't spill out beside the box.
+    // If so, push the corridor to the nearest empty row above the box.
+    // The corridor stays at its original horizontal range (from_cx to to_cx)
+    // because the box is below the corridor, not beside it.
     let mut effective_route_y = route_y;
-    let mut effective_left_x = left_x;
-    let mut effective_right_x = right_x;
     for layout in all_layouts {
         let r = &layout.rect;
         if r == &from || r == &to {
@@ -706,9 +704,6 @@ fn draw_external_transition(
             } else {
                 effective_route_y = r.bottom();
             }
-            // Clamp corridor horizontal range to the box boundaries.
-            effective_left_x = effective_left_x.max(r.x);
-            effective_right_x = effective_right_x.min(r.right().saturating_sub(1));
             break;
         }
     }
@@ -727,12 +722,12 @@ fn draw_external_transition(
     surface.put_vertical(from_cx, from_start, from_len, glyphs.vertical, Layer::Connector);
     surface.put_vertical(to_cx, to_start, to_len, glyphs.vertical, Layer::Connector);
 
-    // Horizontal corridor connecting the two vertical legs (clamped to box).
-    if effective_right_x > effective_left_x {
+    // Horizontal corridor connecting the two vertical legs.
+    if right_x > left_x {
         surface.put_horizontal(
-            effective_left_x,
+            left_x,
             effective_route_y,
-            effective_right_x - effective_left_x + 1,
+            right_x - left_x + 1,
             glyphs.horizontal,
             Layer::Connector,
         );
@@ -754,11 +749,7 @@ fn draw_external_transition(
     if let Some(text) = label {
         use crate::text::wrap_label;
 
-        let corridor_w = if effective_right_x > effective_left_x {
-            effective_right_x - effective_left_x + 1
-        } else {
-            0
-        };
+        let corridor_w = if right_x > left_x { right_x - left_x + 1 } else { 0 };
 
         // Wrap label to corridor width (minus 4 for left/right `---` padding).
         // For same-column (no corridor), use remaining canvas width.
@@ -793,7 +784,7 @@ fn draw_external_transition(
             label_x = label_x.min(canvas_width.saturating_sub(lw));
             // Corridor clamping — keep label within corridor for all rows.
             if corridor_w > 0 && lw < corridor_w {
-                label_x = label_x.max(effective_left_x).min(effective_right_x + 1 - lw);
+                label_x = label_x.max(left_x).min(right_x + 1 - lw);
             }
             let label_y = block_top + i;
             surface.put_str_layered(label_x, label_y, line, Layer::Label);
@@ -802,20 +793,20 @@ fn draw_external_transition(
             // label row where there is a horizontal corridor.
             if corridor_w > 0 {
                 let label_end = label_x + lw;
-                if label_x > effective_left_x {
+                if label_x > left_x {
                     surface.put_horizontal(
-                        effective_left_x,
+                        left_x,
                         label_y,
-                        label_x - effective_left_x,
+                        label_x - left_x,
                         glyphs.horizontal,
                         Layer::Connector,
                     );
                 }
-                if label_end <= effective_right_x {
+                if label_end <= right_x {
                     surface.put_horizontal(
                         label_end,
                         label_y,
-                        effective_right_x - label_end + 1,
+                        right_x - label_end + 1,
                         glyphs.horizontal,
                         Layer::Connector,
                     );
