@@ -681,16 +681,38 @@ fn draw_external_transition(
     // Horizontal corridor in the gap between the two anchor points.
     let route_y = (from_anchor + to_anchor) / 2;
 
-    // Vertical legs from each anchor to the route corridor.
-    let (from_start, from_len) = if from_anchor < route_y {
-        (from_anchor, route_y - from_anchor + 1)
+    // Check if route_y falls inside another state's box (not from/to).
+    // If so, push the corridor to the nearest empty row above the box
+    // so the label sits on a corridor line, not on top of box content.
+    let mut effective_route_y = route_y;
+    for layout in all_layouts {
+        let r = &layout.rect;
+        if r == &from || r == &to {
+            continue;
+        }
+        if effective_route_y >= r.y && effective_route_y < r.bottom() {
+            // Check x overlap: corridor vs box.
+            if from_cx.min(to_cx) <= r.right() && from_cx.max(to_cx) >= r.x {
+                if r.y > 0 {
+                    effective_route_y = r.y.saturating_sub(1);
+                } else {
+                    effective_route_y = r.bottom();
+                }
+                break;
+            }
+        }
+    }
+
+    // Vertical legs from each anchor to the corridor.
+    let (from_start, from_len) = if from_anchor < effective_route_y {
+        (from_anchor, effective_route_y - from_anchor + 1)
     } else {
-        (route_y, from_anchor - route_y + 1)
+        (effective_route_y, from_anchor - effective_route_y + 1)
     };
-    let (to_start, to_len) = if to_anchor < route_y {
-        (to_anchor, route_y - to_anchor + 1)
+    let (to_start, to_len) = if to_anchor < effective_route_y {
+        (to_anchor, effective_route_y - to_anchor + 1)
     } else {
-        (route_y, to_anchor - route_y + 1)
+        (effective_route_y, to_anchor - effective_route_y + 1)
     };
     surface.put_vertical(from_cx, from_start, from_len, glyphs.vertical, Layer::Connector);
     surface.put_vertical(to_cx, to_start, to_len, glyphs.vertical, Layer::Connector);
@@ -700,7 +722,7 @@ fn draw_external_transition(
     if right_x > left_x {
         surface.put_horizontal(
             left_x,
-            route_y,
+            effective_route_y,
             right_x - left_x + 1,
             glyphs.horizontal,
             Layer::Connector,
@@ -734,36 +756,6 @@ fn draw_external_transition(
 
         let (lines, num_lines, _) = wrap_label(text, avail);
 
-        // Check if the label's route_y falls inside another state's box
-        // (not from/to). If so, push the label to the nearest empty row
-        // above or below the box to avoid covering its content.
-        let mut effective_route_y = route_y;
-        if row == 0 {
-            for layout in all_layouts {
-                let r = &layout.rect;
-                // Skip from and to boxes.
-                if r == &from || r == &to {
-                    continue;
-                }
-                // Check if route_y is inside this box (same column range).
-                if effective_route_y >= r.y && effective_route_y < r.bottom() {
-                    // Check x overlap: label corridor vs box.
-                    let box_cx = r.x + r.w / 2;
-                    if (from_cx.min(to_cx)) <= r.right() && (from_cx.max(to_cx)) >= r.x {
-                        // Label corridor overlaps this box. Push label up
-                        // to just above the box.
-                        let _ = box_cx;
-                        if r.y > 0 {
-                            effective_route_y = r.y.saturating_sub(1);
-                        } else {
-                            effective_route_y = r.bottom();
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-
         // row 0: label on corridor (center of from_cx/to_cx).
         // row>0: label on the vertical leg that exists above route_y:
         //   forward → from-leg (from_cx), reverse → to-leg (to_cx).
@@ -783,8 +775,8 @@ fn draw_external_transition(
             let mut label_x = base_x.saturating_sub(lw / 2);
             // Right-edge clamp.
             label_x = label_x.min(canvas_width.saturating_sub(lw));
-            // Corridor clamping only when label is on the corridor (row 0).
-            if row == 0 && right_x > left_x && lw < right_x - left_x + 1 {
+            // Corridor clamping for all rows — keep label within corridor.
+            if right_x > left_x && lw < right_x - left_x + 1 {
                 label_x = label_x.max(left_x).min(right_x + 1 - lw);
             }
             let label_y = block_top + i;

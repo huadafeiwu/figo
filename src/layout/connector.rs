@@ -328,7 +328,7 @@ impl Connector {
             for (i, line) in lines.iter().enumerate() {
                 let line_w = UnicodeWidthStr::width(line.as_str());
                 let base_x = center.saturating_sub(line_w / 2).max(x);
-                let lx = base_x.min(w_limit.saturating_sub(line_w).max(x));
+                let lx = base_x.min((x + len).saturating_sub(line_w)).max(x);
                 let label_y = y.saturating_sub(n).saturating_add(i).max(sy);
                 canvas.put_str_layered(lx, label_y, line, Layer::Label, None);
             }
