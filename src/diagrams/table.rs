@@ -155,10 +155,32 @@ impl<'a> Table<'a> {
         let glyphs = self.border.glyphs(self.charset);
         let col_starts = self.compute_col_starts(&col_widths);
 
-        let data_line_count = all_rows.len();
+        // Pre-compute wrapped cell lines so we know each row's height.
+        let wrapped_rows: Vec<Vec<Vec<String>>> = all_rows
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .enumerate()
+                    .map(|(ci, cell)| {
+                        let col_w = col_widths.get(ci).copied().unwrap_or(1);
+                        let align = self.align.get(ci).copied().unwrap_or(HAlign::Left);
+                        aligned_cell_lines(cell, col_w, align)
+                    })
+                    .collect()
+            })
+            .collect();
+
+        let row_heights: Vec<usize> = wrapped_rows
+            .iter()
+            .map(|cells| cells.iter().map(|lines| lines.len()).max().unwrap_or(1).max(1))
+            .collect();
+
         let has_sep = self.header_separator && !self.headers.is_empty() && !all_rows.is_empty();
         let sep_lines: usize = if has_sep { 1 } else { 0 };
-        let total_height = 1 + data_line_count * (1 + self.padding.vertical * 2) + sep_lines + 1;
+        let total_height = 1
+            + row_heights.iter().map(|&h| h + self.padding.vertical * 2).sum::<usize>()
+            + sep_lines
+            + 1;
 
         let mut canvas = Canvas::new(display_width, total_height);
 
@@ -180,7 +202,8 @@ impl<'a> Table<'a> {
         // Header separator line: write ─ except at column joints where we
         // place ┼. Done in a single pass that walks the canvas row.
         if has_sep {
-            let sep_y = 1 + (1 + self.padding.vertical * 2);
+            let header_h = row_heights.first().copied().unwrap_or(1);
+            let sep_y = 1 + header_h + self.padding.vertical * 2;
             for x in 0..display_width {
                 let existing = canvas.cell_char(x, sep_y).unwrap_or(' ');
                 let ch = if existing == glyphs.vertical {
@@ -194,18 +217,18 @@ impl<'a> Table<'a> {
             }
         }
 
-        // Place cell text. Each cell is centered within its column.
+        // Place cell text. Each cell is wrapped to multiple lines and each
+        // line is padded to exactly its column width so it never overflows.
         let mut y = 1 + self.padding.vertical;
-        for (ri, row_cells) in all_rows.iter().enumerate() {
-            for (ci, cell_text) in row_cells.iter().enumerate() {
+        for (ri, row_lines) in wrapped_rows.iter().enumerate() {
+            let row_h = row_heights[ri];
+            for (ci, cell_lines) in row_lines.iter().enumerate() {
                 let col_start = col_starts[ci];
-                let col_w = col_widths[ci];
-                let align = self.align.get(ci).copied().unwrap_or(HAlign::Left);
-                let display = aligned_cell(cell_text, col_w, align);
-                canvas.put_str(col_start, y, &display);
+                for (li, line) in cell_lines.iter().enumerate() {
+                    canvas.put_str(col_start, y + li, line);
+                }
             }
-            let skip = 1 + self.padding.vertical * 2;
-            y += skip;
+            y += row_h + self.padding.vertical * 2;
             if has_sep && ri == 0 {
                 y += 1;
             }
@@ -283,26 +306,32 @@ impl fmt::Display for Table<'_> {
 }
 
 /// Render a cell with the given column width and horizontal alignment.
-/// Never truncates — if content exceeds width, it is written in full
-/// (the canvas will clip at its own boundary, but no characters are
-/// silently dropped from the cell text itself).
-fn aligned_cell(text: &str, width: usize, align: HAlign) -> String {
-    let t_len = text.width();
-    if t_len >= width {
-        // Content is wider than the column — write it in full without
-        // truncation. The caller's canvas boundary handles clipping.
-        return text.to_string();
-    }
-    let pad = width - t_len;
-    match align {
-        HAlign::Left => format!("{}{}", text, " ".repeat(pad)),
-        HAlign::Right => format!("{}{}", " ".repeat(pad), text),
-        HAlign::Center => {
-            let left = pad / 2;
-            let right = pad - left;
-            format!("{}{}{}", " ".repeat(left), text, " ".repeat(right))
-        }
-    }
+/// Wraps long content to multiple lines. Each line is padded to exactly
+/// `width` so it never overflows into the next column.
+fn aligned_cell_lines(text: &str, width: usize, align: HAlign) -> Vec<String> {
+    let (lines, _, _) = crate::text::wrap_label(text, width.max(2));
+    lines
+        .into_iter()
+        .map(|line| {
+            let lw = line.width();
+            if lw >= width {
+                // Line is exactly at or over width — return as-is (shouldn't
+                // exceed because wrap_label uses width as max).
+                line
+            } else {
+                let pad = width - lw;
+                match align {
+                    HAlign::Left => format!("{}{}", line, " ".repeat(pad)),
+                    HAlign::Right => format!("{}{}", " ".repeat(pad), line),
+                    HAlign::Center => {
+                        let left = pad / 2;
+                        let right = pad - left;
+                        format!("{}{}{}", " ".repeat(left), line, " ".repeat(right))
+                    }
+                }
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

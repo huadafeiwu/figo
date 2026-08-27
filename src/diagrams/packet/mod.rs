@@ -179,9 +179,12 @@ fn validate(width: usize, fields: &[PacketField]) -> Result<Layout> {
     }
     let inner_w = width.saturating_sub(2);
     let col_per_bit = inner_w / 32;
-    if col_per_bit == 0 {
+    // Require col_per_bit >= 2 so that even 1-bit fields have at least 2
+    // columns of internal width — enough for wrap_label to work without
+    // overflowing into the next field's border.
+    if col_per_bit < 2 {
         return Err(FigoError::InvalidDimensions(format!(
-            "width too small for packet diagram (got width {width}, need at least 36)"
+            "width too small for packet diagram (got width {width}, need at least 68)"
         )));
     }
     let bit_w = 32 * col_per_bit;

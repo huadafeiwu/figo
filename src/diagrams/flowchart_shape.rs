@@ -52,9 +52,12 @@ pub fn node_dims(label: &str, shape: NodeShape, total_width: usize) -> (usize, u
             }
         }
         NodeShape::Diamond => {
+            // Diamond is sized to fit the full label on the middle row.
+            // Never clamp width — let it grow to natural size so the
+            // label fits without wrapping (wrapping in a diamond shape
+            // doesn't work because the interior narrows toward the apexes).
             let r = (label_w / 2 + 1).max(3);
             let w = 2 * r + 1;
-            let w = w.min(total_width).max(5);
             let h = 2 * r + 1;
             (w, h)
         }

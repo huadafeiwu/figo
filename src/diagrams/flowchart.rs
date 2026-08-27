@@ -415,13 +415,12 @@ impl Flowchart {
         let inner_w = pos.rect.w.saturating_sub(2).max(2);
         let (label_lines, _, _) = crate::text::wrap_label(&pos.node.label, inner_w);
         let num_lines = label_lines.len().max(1);
-        let start_y = pos.rect.y + (pos.rect.h.saturating_sub(num_lines)) / 2 + 1;
+        let content_h = pos.rect.h.saturating_sub(2);
+        let start_y = pos.rect.y + 1 + content_h.saturating_sub(num_lines) / 2;
         for (i, line) in label_lines.iter().enumerate() {
-            let lw = pos.node.label.width();
-            let line_w = unicode_width::UnicodeWidthStr::width(line.as_str());
+            let line_w = UnicodeWidthStr::width(line.as_str());
             let lx = pos.rect.x + (pos.rect.w.saturating_sub(line_w)) / 2;
             canvas.put_str_layered(lx, start_y + i, line, Layer::NodeContent, None);
-            let _ = lw;
         }
     }
 
