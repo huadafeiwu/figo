@@ -120,7 +120,15 @@ impl<'a> StateDiagram<'a> {
             } else {
                 total_w.saturating_sub(from_cx + 2)
             };
-            let avail = corridor_w.max(2);
+            // Mirror draw_external_transition's embed logic: only embed when
+            // corridor is wide enough for the full label on one line.
+            let label_w = UnicodeWidthStr::width(text.as_str());
+            let embed = corridor_w > 4 && corridor_w >= label_w + 4;
+            let avail = if embed {
+                corridor_w - 4
+            } else {
+                total_w.saturating_sub(from_cx + 2).max(2)
+            };
             let (_, _, max_lw) = crate::text::wrap_label(text, avail);
             let lw = max_lw;
             let lx = base_x.saturating_sub(lw / 2);
@@ -760,14 +768,19 @@ fn draw_external_transition(
 
         let corridor_w = if right_x > left_x { right_x - left_x + 1 } else { 0 };
 
-        // Wrap label to corridor width (minus 4 for left/right `---` padding).
-        // Wrap label to corridor width minus 4 (left/right `---` padding).
-        // expand_corridors_for_labels already widened the corridor as much
-        // as possible; if still too narrow, the label wraps to fit.
-        let avail = if corridor_w > 4 {
+        // Decide whether to embed the label in the corridor or place it
+        // beside the vertical line using the full canvas width. Only embed
+        // when the corridor is wide enough to hold the label (with 4 cells
+        // of `---` padding) on a single line — this avoids squeezing long
+        // labels into tiny corridors and producing one-character-per-line
+        // vertical stacks.
+        let label_w = UnicodeWidthStr::width(text);
+        let embed_in_corridor = corridor_w > 4 && corridor_w >= label_w + 4;
+
+        // When embedding, wrap to corridor width minus padding. Otherwise
+        // use the remaining canvas width for a reasonable wrap width.
+        let avail = if embed_in_corridor {
             corridor_w - 4
-        } else if corridor_w > 0 {
-            corridor_w.max(2)
         } else {
             canvas_width.saturating_sub(from_cx + 2).max(2)
         };
@@ -792,16 +805,17 @@ fn draw_external_transition(
             let mut label_x = base_x.saturating_sub(lw / 2);
             // Right-edge clamp.
             label_x = label_x.min(canvas_width.saturating_sub(lw));
-            // Corridor clamping — keep label within corridor.
-            if corridor_w > 0 && lw < corridor_w {
+            // Corridor clamping — keep label within corridor. Only when
+            // the label is embedded in a wide-enough corridor.
+            if embed_in_corridor && lw < corridor_w {
                 label_x = label_x.max(left_x).min(right_x + 1 - lw);
             }
             let label_y = block_top + i;
             surface.put_str_layered(label_x, label_y, line, Layer::Label);
 
-            // Restore corridor `---` on both sides of the label on every
-            // label row where there is a horizontal corridor.
-            if corridor_w > 0 {
+            // Restore corridor `---` on both sides of the label only when
+            // the label is embedded in the corridor.
+            if embed_in_corridor {
                 let label_end = label_x + lw;
                 if label_x > left_x {
                     surface.put_horizontal(
