@@ -141,7 +141,14 @@ pub fn layout_states(
     );
 
     // --- Column gaps with label width awareness ---
-    sugiyama::compute_column_gaps(&mut x_coords, transitions, &id_to_idx, &sizes, params.gap_x);
+    sugiyama::compute_column_gaps(
+        &mut x_coords,
+        transitions,
+        &id_to_idx,
+        &sizes,
+        params.gap_x,
+        canvas_width,
+    );
 
     // --- Assign y-coordinates (same as before: per-layer y accumulation) ---
     let mut y = params.top_margin;

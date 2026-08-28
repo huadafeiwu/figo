@@ -275,12 +275,18 @@ pub fn assign_coordinates(
 }
 
 /// Phase 3b: Widen column gaps to fit transition labels.
+///
+/// Uses **center distance** (not edge distance) to match the corridor_w
+/// calculation in `compute_trans_geoms`. The needed gap = label_w + 4
+/// (2 cells padding per side). If widening would push nodes beyond
+/// canvas_width, the gap is capped and the label will wrap instead.
 pub fn compute_column_gaps(
     x: &mut [usize],
     transitions: &[Transition],
     id_to_idx: &HashMap<&str, usize>,
     sizes: &[Size],
     min_gap: usize,
+    canvas_width: usize,
 ) {
     let mut gap_reqs: Vec<(usize, usize, usize)> = Vec::new();
     for t in transitions {
@@ -292,7 +298,6 @@ pub fn compute_column_gaps(
         if from_i >= x.len() || to_i >= x.len() {
             continue;
         }
-        // Use center distance to match render-side corridor_w.
         let from_cx = x[from_i] + sizes[from_i].w / 2;
         let to_cx = x[to_i] + sizes[to_i].w / 2;
         if from_cx == to_cx {
@@ -312,20 +317,29 @@ pub fn compute_column_gaps(
     for &(from_i, to_i, needed) in &gap_reqs {
         let from_cx = x[from_i] + sizes[from_i].w / 2;
         let to_cx = x[to_i] + sizes[to_i].w / 2;
-        let (left, left_w, right) = if from_cx < to_cx {
-            (x[from_i], sizes[from_i].w, x[to_i])
-        } else {
-            (x[to_i], sizes[to_i].w, x[from_i])
-        };
 
-        let current_gap = right.saturating_sub(left + left_w);
-        if current_gap < needed {
-            let extra = needed - current_gap;
-            let shift_from = right;
-            for xi in x.iter_mut() {
-                if *xi >= shift_from {
-                    *xi += extra;
-                }
+        // Use center distance (matches corridor_w in compute_trans_geoms).
+        let current_corridor = from_cx.abs_diff(to_cx) + 1;
+        if current_corridor >= needed {
+            continue;
+        }
+
+        // Need to widen: shift the right node (and all nodes to its right)
+        // by the extra amount. Cap at canvas_width so we don't overflow.
+        let extra = needed - current_corridor;
+        let right_node = if from_cx < to_cx { to_i } else { from_i };
+        let right_x = x[right_node];
+        // Check if shifting would exceed canvas.
+        let max_right_after =
+            x.iter().zip(sizes.iter()).map(|(&xi, s)| xi + s.w).max().unwrap_or(0);
+        if max_right_after + extra > canvas_width {
+            // Can't widen enough — label will wrap. Skip.
+            continue;
+        }
+        let shift_from = right_x;
+        for xi in x.iter_mut() {
+            if *xi >= shift_from {
+                *xi += extra;
             }
         }
     }
@@ -380,8 +394,7 @@ fn compute_single_geom(
         let corridor_w = right_x.saturating_sub(left_x);
         let label_w = label.map(unicode_width::UnicodeWidthStr::width).unwrap_or(0);
         let embed = corridor_w > 4 && corridor_w >= label_w + 4;
-        let avail =
-            if embed { corridor_w - 4 } else { canvas_width.saturating_sub(left_x + 2).max(2) };
+        let avail = if embed { corridor_w - 4 } else { corridor_w.max(2) };
         let base_x = (left_x + right_x) / 2;
         TransGeom {
             from_cx,
@@ -400,8 +413,11 @@ fn compute_single_geom(
         let corridor_w = if right_x > left_x { right_x - left_x + 1 } else { 0 };
         let label_w = label.map(unicode_width::UnicodeWidthStr::width).unwrap_or(0);
         let embed = corridor_w > 0 && corridor_w >= label_w + 4;
-        let avail =
-            if embed { corridor_w - 4 } else { canvas_width.saturating_sub(from_cx + 2).max(2) };
+        let avail = if corridor_w > 0 {
+            if embed { corridor_w - 4 } else { corridor_w.max(2) }
+        } else {
+            canvas_width.saturating_sub(from_cx + 2).max(2)
+        };
         // For aligned edges (corridor_w == 0), label goes beside the leg.
         let base_x = if corridor_w == 0 { from_cx } else { (from_cx + to_cx) / 2 };
         TransGeom {
