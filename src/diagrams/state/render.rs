@@ -704,74 +704,85 @@ fn draw_external_transition(
     let to_cx = geom.to_cx;
 
     // Same-layer transition: draw a direct horizontal arrow between
-    // the two boxes instead of a vertical corridor.
+    // the two boxes — but only if no other box sits between them.
     if geom.same_layer && from_cx != to_cx {
-        let left_to_right = from_cx < to_cx;
-        let ly = from.y + from.h / 2;
         let left_edge = geom.left_x;
         let right_edge = geom.right_x;
-        if right_edge > left_edge {
-            surface.put_horizontal(
-                left_edge,
-                ly,
-                right_edge - left_edge,
-                glyphs.horizontal,
-                Layer::Connector,
-            );
-        }
-        let arrow = if left_to_right {
-            match ctx.charset {
-                Charset::Ascii => '>',
-                Charset::Unicode => '▶',
+        let ly = from.y + from.h / 2;
+
+        // Check if any other box in the same layer sits between from and to.
+        let has_obstacle = all_layouts.iter().any(|layout| {
+            let r = &layout.rect;
+            r != &from && r != &to && r.y == from.y && r.right() > left_edge && r.x < right_edge
+        });
+
+        if !has_obstacle {
+            let left_to_right = from_cx < to_cx;
+            if right_edge > left_edge {
+                surface.put_horizontal(
+                    left_edge,
+                    ly,
+                    right_edge - left_edge,
+                    glyphs.horizontal,
+                    Layer::Connector,
+                );
             }
-        } else {
-            match ctx.charset {
-                Charset::Ascii => '<',
-                Charset::Unicode => '◀',
-            }
-        };
-        surface.put_layered(right_edge, ly, arrow, Layer::ConnectorEnd);
+            let arrow = if left_to_right {
+                match ctx.charset {
+                    Charset::Ascii => '>',
+                    Charset::Unicode => '▶',
+                }
+            } else {
+                match ctx.charset {
+                    Charset::Ascii => '<',
+                    Charset::Unicode => '◀',
+                }
+            };
+            surface.put_layered(right_edge, ly, arrow, Layer::ConnectorEnd);
 
-        if let Some(text) = label {
-            use crate::text::wrap_label;
-            let avail = geom.avail;
-            let (lines, n, _) = wrap_label(text, avail);
-            let mid_x = geom.base_x;
-            let block_top = ly.saturating_sub(n / 2);
+            if let Some(text) = label {
+                use crate::text::wrap_label;
+                let avail = geom.avail;
+                let (lines, n, _) = wrap_label(text, avail);
+                let mid_x = geom.base_x;
+                let block_top = ly.saturating_sub(n / 2);
 
-            for (i, line) in lines.iter().enumerate() {
-                let lw = UnicodeWidthStr::width(line.as_str());
-                let mut label_x = mid_x.saturating_sub(lw / 2);
-                // Clamp label to leave room for `---` on both sides.
-                label_x = label_x.max(left_edge).min(right_edge.saturating_sub(lw));
-                let label_y = block_top + i;
-                surface.put_str_layered(label_x, label_y, line, Layer::Label);
+                for (i, line) in lines.iter().enumerate() {
+                    let lw = UnicodeWidthStr::width(line.as_str());
+                    let mut label_x = mid_x.saturating_sub(lw / 2);
+                    label_x = label_x.max(left_edge).min(right_edge.saturating_sub(lw));
+                    let label_y = block_top + i;
+                    // Scene D: don't let label cover any box.
+                    label_x = avoid_box_x(label_x, lw, label_y, from, to, all_layouts);
+                    surface.put_str_layered(label_x, label_y, line, Layer::Label);
 
-                // Restore `---` on both sides of the label on the corridor row.
-                if geom.corridor_w > 0 {
-                    let label_end = label_x + lw;
-                    if label_x > left_edge {
-                        surface.put_horizontal(
-                            left_edge,
-                            label_y,
-                            label_x - left_edge,
-                            glyphs.horizontal,
-                            Layer::Connector,
-                        );
-                    }
-                    if label_end <= right_edge {
-                        surface.put_horizontal(
-                            label_end,
-                            label_y,
-                            right_edge.saturating_sub(label_end),
-                            glyphs.horizontal,
-                            Layer::Connector,
-                        );
+                    // Restore `---` on both sides of the label on the corridor row.
+                    if geom.corridor_w > 0 {
+                        let label_end = label_x + lw;
+                        if label_x > left_edge {
+                            surface.put_horizontal(
+                                left_edge,
+                                label_y,
+                                label_x - left_edge,
+                                glyphs.horizontal,
+                                Layer::Connector,
+                            );
+                        }
+                        if label_end <= right_edge {
+                            surface.put_horizontal(
+                                label_end,
+                                label_y,
+                                right_edge.saturating_sub(label_end),
+                                glyphs.horizontal,
+                                Layer::Connector,
+                            );
+                        }
                     }
                 }
             }
+            return;
         }
-        return;
+        // If there's an obstacle, fall through to V-H-V path.
     }
 
     let forward = from.y < to.y;
@@ -812,6 +823,14 @@ fn draw_external_transition(
         }
     }
 
+    // Scene B+G: Vertical leg avoidance — if from_cx or to_cx falls
+    // inside an intermediate box's x range, reroute the leg to the
+    // box's nearest edge column so it doesn't visually pass through.
+    let from_leg_cx =
+        reroute_leg_around_boxes(from_cx, from_anchor, effective_route_y, from, to, all_layouts);
+    let to_leg_cx =
+        reroute_leg_around_boxes(to_cx, to_anchor, effective_route_y, from, to, all_layouts);
+
     // Vertical legs from each anchor to the corridor.
     let (from_start, from_len) = if from_anchor < effective_route_y {
         (from_anchor, effective_route_y - from_anchor + 1)
@@ -823,15 +842,17 @@ fn draw_external_transition(
     } else {
         (effective_route_y, to_anchor - effective_route_y + 1)
     };
-    surface.put_vertical(from_cx, from_start, from_len, glyphs.vertical, Layer::Connector);
-    surface.put_vertical(to_cx, to_start, to_len, glyphs.vertical, Layer::Connector);
+    surface.put_vertical(from_leg_cx, from_start, from_len, glyphs.vertical, Layer::Connector);
+    surface.put_vertical(to_leg_cx, to_start, to_len, glyphs.vertical, Layer::Connector);
 
     // Horizontal corridor connecting the two vertical legs.
-    if right_x > left_x {
+    let corridor_left = from_leg_cx.min(to_leg_cx);
+    let corridor_right = from_leg_cx.max(to_leg_cx);
+    if corridor_right > corridor_left {
         surface.put_horizontal(
-            left_x,
+            corridor_left,
             effective_route_y,
-            right_x - left_x + 1,
+            corridor_right - corridor_left + 1,
             glyphs.horizontal,
             Layer::Connector,
         );
@@ -845,7 +866,7 @@ fn draw_external_transition(
         (false, Charset::Unicode) => '▲',
     };
     let arrow_y = if forward { to.y } else { to.y + to.h - 1 };
-    surface.put_layered(to_cx, arrow_y, arrow_ch, Layer::ConnectorEnd);
+    surface.put_layered(to_leg_cx, arrow_y, arrow_ch, Layer::ConnectorEnd);
 
     // Label: use pre-computed geometry (single source of truth).
     if let Some(text) = label {
@@ -871,12 +892,13 @@ fn draw_external_transition(
             let lw = UnicodeWidthStr::width(line.as_str());
             let mut label_x = base_x.saturating_sub(lw / 2);
             label_x = label_x.min(canvas_width.saturating_sub(lw));
-            // Clamp label to corridor bounds when embedded, leaving room
-            // for `+` at the junction points.
+            // Clamp label to corridor bounds when embedded.
             if embed_in_corridor && lw < corridor_w {
                 label_x = label_x.max(left_x).min(right_x + 1 - lw);
             }
             let label_y = block_top + i;
+            // Scene D: don't let label cover any box.
+            label_x = avoid_box_x(label_x, lw, label_y, from, to, all_layouts);
             surface.put_str_layered(label_x, label_y, line, Layer::Label);
             label_positions.push((label_x, lw, label_y));
         }
@@ -889,37 +911,47 @@ fn draw_external_transition(
             let idx = effective_route_y - block_top;
             if let Some(&(lx, lw, _)) = label_positions.get(idx) {
                 let label_end = lx + lw;
-                if lx > left_x {
+                if lx > corridor_left {
                     surface.put_horizontal(
-                        left_x,
+                        corridor_left,
                         effective_route_y,
-                        lx - left_x,
+                        lx - corridor_left,
                         glyphs.horizontal,
                         Layer::Connector,
                     );
                 }
-                if label_end <= right_x {
+                if label_end <= corridor_right {
                     surface.put_horizontal(
                         label_end,
                         effective_route_y,
-                        right_x - label_end + 1,
+                        corridor_right - label_end + 1,
                         glyphs.horizontal,
                         Layer::Connector,
                     );
                 }
                 let junction_ch = if ctx.charset == Charset::Ascii { '+' } else { '┼' };
-                if lx > left_x {
-                    surface.put_layered(left_x, effective_route_y, junction_ch, Layer::Connector);
+                if lx > corridor_left {
+                    surface.put_layered(
+                        corridor_left,
+                        effective_route_y,
+                        junction_ch,
+                        Layer::Connector,
+                    );
                 }
-                if label_end <= right_x {
-                    surface.put_layered(right_x, effective_route_y, junction_ch, Layer::Connector);
+                if label_end <= corridor_right {
+                    surface.put_layered(
+                        corridor_right,
+                        effective_route_y,
+                        junction_ch,
+                        Layer::Connector,
+                    );
                 }
             }
         }
 
-        // Restore vertical leg `|` around the label block.
+        // Restore vertical legs `|` around the label block.
         if row > 0 {
-            let vcol = if forward { from_cx } else { to_cx };
+            let vcol = if forward { from_leg_cx } else { to_leg_cx };
             let top_y = if forward { from_anchor } else { to_anchor };
             let leg_top = top_y.min(effective_route_y);
             for ly in leg_top..block_top {
@@ -929,12 +961,87 @@ fn draw_external_transition(
                 surface.put_layered(vcol, ly, glyphs.vertical, Layer::Connector);
             }
         } else if corridor_w > 0 {
-            let vcol = if forward { from_cx } else { to_cx };
+            let vcol = if forward { from_leg_cx } else { to_leg_cx };
             for ly in (block_top + num_lines)..=effective_route_y {
                 surface.put_layered(vcol, ly, glyphs.vertical, Layer::Connector);
             }
         }
     }
+}
+
+/// Scene B+G: If a vertical leg at column `cx` would pass through an
+/// intermediate box (not from/to), reroute it to the box's nearest
+/// left or right edge so the leg goes around the box instead of
+/// visually passing through it.
+fn reroute_leg_around_boxes(
+    cx: usize,
+    anchor_y: usize,
+    route_y: usize,
+    from: Rect,
+    to: Rect,
+    all_layouts: &[StateLayout],
+) -> usize {
+    let lo = anchor_y.min(route_y);
+    let hi = anchor_y.max(route_y);
+    for layout in all_layouts {
+        let r = &layout.rect;
+        if r == &from || r == &to {
+            continue;
+        }
+        // Only reroute if the box is strictly between the leg's endpoints
+        // (not at the same layer as from or to).
+        if r.y <= from.y || r.y >= to.y {
+            continue;
+        }
+        // Skip if cx is the center of this box — the leg passing through
+        // to reach a box below at the same column is correct UML behavior.
+        let box_cx = r.x + r.w / 2;
+        if cx == box_cx {
+            continue;
+        }
+        // Does the leg's y range [lo, hi] overlap the box's y range?
+        if lo < r.bottom() && hi >= r.y && cx >= r.x && cx < r.right() {
+            // Leg passes through this box. Reroute to nearest edge.
+            let dist_left = cx.saturating_sub(r.x);
+            let dist_right = r.right().saturating_sub(cx + 1);
+            return if dist_left <= dist_right { r.x.saturating_sub(1) } else { r.right() };
+        }
+    }
+    cx
+}
+
+/// Scene D: Adjust label_x so the label [label_x, label_x+lw) does not
+/// overlap any box at row label_y. If it does, shift it left or right
+/// to the nearest non-overlapping position.
+fn avoid_box_x(
+    mut label_x: usize,
+    lw: usize,
+    label_y: usize,
+    from: Rect,
+    to: Rect,
+    all_layouts: &[StateLayout],
+) -> usize {
+    let label_end = label_x + lw;
+    for layout in all_layouts {
+        let r = &layout.rect;
+        if r == &from || r == &to {
+            continue;
+        }
+        // Does label overlap this box at this y?
+        if label_y >= r.y && label_y < r.bottom() && label_end > r.x && label_x < r.right() {
+            // Try shifting right past the box.
+            let shift_right = r.right();
+            // Try shifting left before the box.
+            let shift_left = r.x.saturating_sub(lw);
+            // Pick the shift closer to original position.
+            if shift_right.saturating_sub(label_x) <= label_x.saturating_sub(shift_left) {
+                label_x = shift_right;
+            } else {
+                label_x = shift_left;
+            }
+        }
+    }
+    label_x
 }
 
 fn draw_self_loop(
