@@ -294,15 +294,15 @@ pub fn assign_coordinates(
 ///
 /// Uses **center distance** (not edge distance) to match the corridor_w
 /// calculation in `compute_trans_geoms`. The needed gap = label_w + 4
-/// (2 cells padding per side). If widening would push nodes beyond
-/// canvas_width, the gap is capped and the label will wrap instead.
+/// (2 cells padding per side). Canvas width is expanded by `build()` to
+/// fit, so gaps are not capped here.
 pub fn compute_column_gaps(
     x: &mut [usize],
     transitions: &[Transition],
     id_to_idx: &HashMap<&str, usize>,
     sizes: &[Size],
     min_gap: usize,
-    canvas_width: usize,
+    _canvas_width: usize,
 ) {
     let mut gap_reqs: Vec<(usize, usize, usize)> = Vec::new();
     for t in transitions {
@@ -340,24 +340,20 @@ pub fn compute_column_gaps(
             continue;
         }
 
-        // Need to widen: shift the right node (and all nodes to its right)
-        // by the extra amount. Cap at canvas_width so we don't overflow.
+        // Need to widen: shift the right node (and all nodes with cx >=
+        // right cx) by the extra amount. Use cx (not x) to determine which
+        // nodes are "to the right" — nodes in the same alignment block may
+        // share the same x but have different cx.
         let extra = needed - current_corridor;
-        let right_node = if from_cx < to_cx { to_i } else { from_i };
-        let right_x = x[right_node];
-        // Check if shifting would exceed canvas.
-        let max_right_after =
-            x.iter().zip(sizes.iter()).map(|(&xi, s)| xi + s.w).max().unwrap_or(0);
-        if max_right_after + extra > canvas_width {
-            // Can't widen enough — label will wrap. Skip.
-            continue;
-        }
-        let shift_from = right_x;
-        for xi in x.iter_mut() {
-            if *xi >= shift_from {
+        let right_idx = if from_cx < to_cx { to_i } else { from_i };
+        let right_cx = x[right_idx] + sizes[right_idx].w / 2;
+        for (i, xi) in x.iter_mut().enumerate() {
+            let cx = *xi + sizes[i].w / 2;
+            if cx >= right_cx && i != right_idx {
                 *xi += extra;
             }
         }
+        x[right_idx] += extra;
     }
 }
 
