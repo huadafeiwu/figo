@@ -902,9 +902,12 @@ fn draw_external_transition(
         }
 
         // Restore corridor `---` ONLY on the corridor row (effective_route_y),
-        // and only when the label is embedded in the corridor (label covers
-        // part of the `---` line and needs to be restored around it).
-        if embed_in_corridor
+        // whenever a horizontal corridor exists (embedded or not). This
+        // ensures the corridor stays visible even when the label is too wide
+        // to embed and covers part of the `---` line. Also write `+` at the
+        // junction points (where vertical legs meet the corridor) since
+        // repair_ascii_junctions may miss them when label covers neighbors.
+        if corridor_w > 0
             && effective_route_y >= block_top
             && effective_route_y < block_top + num_lines
         {
@@ -929,13 +932,23 @@ fn draw_external_transition(
                         Layer::Connector,
                     );
                 }
+                // Write `+` at corridor junction points where vertical legs
+                // meet the horizontal corridor. Use the same layer as the
+                // corridor so it's consistent.
+                let junction_ch = if ctx.charset == Charset::Ascii { '+' } else { '┼' };
+                if lx > left_x {
+                    surface.put_layered(left_x, effective_route_y, junction_ch, Layer::Connector);
+                }
+                if label_end <= right_x {
+                    surface.put_layered(right_x, effective_route_y, junction_ch, Layer::Connector);
+                }
             }
         }
 
         // Restore vertical leg `|` around the label block so the connector
         // stays continuous. For row>0 this is always needed. For row==0
-        // when the label is embedded in the corridor, the label may cover
-        // from_cx; restore the segment below the label to the corridor row.
+        // with a corridor, the label may cover from_cx; restore the segment
+        // below the label to the corridor row.
         if row > 0 {
             let vcol = if forward { from_cx } else { to_cx };
             let top_y = if forward { from_anchor } else { to_anchor };
@@ -946,7 +959,7 @@ fn draw_external_transition(
             for ly in (block_top + num_lines)..=effective_route_y {
                 surface.put_layered(vcol, ly, glyphs.vertical, Layer::Connector);
             }
-        } else if embed_in_corridor && corridor_w > 0 {
+        } else if corridor_w > 0 {
             let vcol = if forward { from_cx } else { to_cx };
             for ly in (block_top + num_lines)..=effective_route_y {
                 surface.put_layered(vcol, ly, glyphs.vertical, Layer::Connector);

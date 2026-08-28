@@ -350,6 +350,61 @@ impl Canvas {
                 }
             }
         }
+        // Second pass: break up horizontal runs of adjacent junction
+        // glyphs in narrow corridors (the Unicode equivalent of the
+        // ASCII `+++` cleanup). Two adjacent `┼`/T-junctions with no
+        // `─` between them are visually broken; restore every other
+        // cell to the horizontal line glyph.
+        let h_ch = match style {
+            LineStyle::Bold => '━',
+            LineStyle::Simple | LineStyle::BoxDrawing => '─',
+        };
+        for y in 0..self.height {
+            let mut x = 0;
+            while x < self.width {
+                if !self.is_unicode_junction_at(x, y) {
+                    x += 1;
+                    continue;
+                }
+                let run_start = x;
+                while x < self.width && self.is_unicode_junction_at(x, y) {
+                    x += 1;
+                }
+                let run_len = x - run_start;
+                if run_len >= 2 {
+                    for i in (1..run_len).step_by(2) {
+                        self.put_layered(run_start + i, y, h_ch, Layer::Connector, None);
+                    }
+                }
+            }
+        }
+    }
+
+    fn is_unicode_junction_at(&self, x: usize, y: usize) -> bool {
+        let Some(cell) = self.cell(x, y) else { return false };
+        if cell.layer != Layer::Connector {
+            return false;
+        }
+        matches!(
+            cell.ch,
+            '┌' | '┐'
+                | '└'
+                | '┘'
+                | '├'
+                | '┤'
+                | '┬'
+                | '┴'
+                | '┼'
+                | '┏'
+                | '┓'
+                | '┗'
+                | '┛'
+                | '┣'
+                | '┫'
+                | '┳'
+                | '┻'
+                | '╋'
+        )
     }
 
     fn is_connector_line(&self, x: usize, y: usize) -> bool {

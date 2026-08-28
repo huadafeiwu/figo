@@ -19,20 +19,22 @@ pub enum Segment {
 /// connector so the H segment sits in the **gap between** the source and
 /// target — never inside either rect.
 ///
-/// When `sy < ty` (flow downward) the corridor is placed at the
-/// midpoint of the vertical gap between the source bottom and target
-/// top. When `sy > ty` (flow upward) the corridor sits in the gap
-/// between the target bottom and source top.
+/// When `sy < ty` (flow downward) the corridor is placed one row below
+/// the source bottom, leaving maximum room for the down-leg to the
+/// target (so `|` is visible between the corridor and the arrowhead).
+/// When `sy > ty` (flow upward) the corridor sits one row above the
+/// source top for the same reason.
 pub fn natural_mid_y(sy: usize, ty: usize, src: &Rect, tgt: &Rect) -> usize {
     if sy < ty {
         let lo = src.bottom();
         let hi = tgt.y;
-        let mid = if hi > lo { lo + (hi - lo) / 2 } else { lo };
-        mid.max(lo)
+        // Place corridor near the source side so the down-leg has room.
+        let mid = if hi > lo { lo + 1 } else { lo };
+        mid.max(lo).min(hi.saturating_sub(1))
     } else if sy > ty {
         let lo = tgt.bottom();
         let hi = src.y;
-        let mid = if hi > lo { lo + (hi - lo) / 2 } else { lo };
+        let mid = if hi > lo { hi.saturating_sub(1) } else { lo };
         if mid >= src.y { src.y.saturating_sub(1) } else { mid }
     } else {
         sy

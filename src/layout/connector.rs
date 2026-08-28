@@ -357,8 +357,8 @@ impl Connector {
             }
 
             // Restore `---` ONLY on the corridor row (segment y), not on
-            // every label row. This prevents spurious `---` on non-corridor
-            // rows and stray `+` junctions.
+            // every label row. Also write `+` at junction points where
+            // vertical legs meet the corridor.
             if y >= block_top && y < block_top + n {
                 let idx = y - block_top;
                 if let Some(&(lx, line_w, label_y)) = label_positions.get(idx) {
@@ -374,6 +374,17 @@ impl Connector {
                             h_ch,
                             Layer::Connector,
                         );
+                    }
+                    // Write `+` at corridor junction points.
+                    let junction_ch = match self.charset {
+                        Charset::Ascii => '+',
+                        Charset::Unicode => '┼',
+                    };
+                    if lx > x {
+                        canvas.put_layered(x, label_y, junction_ch, Layer::Connector, None);
+                    }
+                    if label_end <= x + len {
+                        canvas.put_layered(x + len, label_y, junction_ch, Layer::Connector, None);
                     }
                 }
             }
