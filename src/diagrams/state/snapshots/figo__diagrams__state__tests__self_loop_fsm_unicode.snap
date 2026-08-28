@@ -2,6 +2,6 @@
 source: src/diagrams/state/mod.rs
 expression: out
 ---
-             ╭────────────╮ ┐ tick
-       ●────>│    Idle    │<│
-             ╰────────────╯─┘
+                ╭────────────╮ ┐ tick
+          ●────>│    Idle    │<│
+                ╰────────────╯─┘

@@ -2,6 +2,7 @@
 
 pub mod layout;
 pub mod render;
+pub mod sugiyama;
 pub mod types;
 
 pub use render::StateDiagram;

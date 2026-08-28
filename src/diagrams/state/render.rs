@@ -78,13 +78,9 @@ impl<'a> StateDiagram<'a> {
         let mut layouts =
             layout_states(&self.states, &self.transitions, self.initial, self.width, &params);
 
-        // Recenter first, then expand corridors. If expand runs before
-        // recenter, recenter's single-state centering overrides the
-        // corridor widening (sets rect.x = canvas_width/2 - w/2),
-        // undoing the expansion for single-column layers.
-        recenter_layouts(&mut layouts, self.width);
-        expand_corridors_for_labels(&mut layouts, &self.transitions, &params, self.width);
-
+        // Sugiyama crossing reduction + coordinate assignment is now done
+        // inside layout_states, so recenter and expand_corridors are no
+        // longer needed — column gaps already account for label widths.
         let label_rows = compute_label_rows(&self.transitions, &layouts);
 
         // Compute per-gap max row and expand gaps accordingly.
@@ -340,6 +336,7 @@ fn shift_layouts(layouts: &mut [StateLayout], dy: usize) {
 /// so that all single-column states share the same center column regardless
 /// of their individual widths (prevents integer-division misalignment
 /// between odd/even-width boxes in vertical transitions).
+#[allow(dead_code)]
 fn recenter_layouts(layouts: &mut [StateLayout], canvas_width: usize) {
     use std::collections::HashMap;
     let mut y_groups: HashMap<usize, Vec<usize>> = HashMap::new();
@@ -373,6 +370,7 @@ fn recenter_layouts(layouts: &mut [StateLayout], canvas_width: usize) {
 /// Shifts are applied incrementally so each transition sees the updated
 /// layout from prior shifts (prevents corridor width miscalculation when
 /// one shift moves a state that is the `from` of a later transition).
+#[allow(dead_code)]
 fn expand_corridors_for_labels(
     layouts: &mut [StateLayout],
     transitions: &[Transition],

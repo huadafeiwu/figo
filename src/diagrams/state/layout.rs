@@ -7,6 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::diagrams::state::sugiyama;
 use crate::diagrams::state::types::{StateNode, StateType, Transition};
 use crate::render::widget::{Rect, Size};
 use unicode_width::UnicodeWidthStr;
@@ -113,37 +114,55 @@ pub fn layout_states(
         })
         .collect();
 
-    let mut y = params.top_margin;
+    // Build predecessor map for Sugiyama.
+    let mut predecessors: Vec<Vec<usize>> = vec![Vec::new(); node_count];
+    for t in transitions {
+        if let (Some(&from), Some(&to)) =
+            (id_to_idx.get(t.from.as_str()), id_to_idx.get(t.to.as_str()))
+        {
+            if from != to {
+                predecessors[to].push(from);
+            }
+        }
+    }
 
-    // When there's an initial pseudo-state, reserve left margin for the
-    // entry arrow (drawn at layout.rect.x - 6). Instead of shifting all
-    // layers right by dx (which breaks centering), reduce the effective
-    // canvas width so centering accounts for the left margin.
+    // --- Sugiyama phase 2: crossing reduction ---
+    let reordered = sugiyama::reduce_crossings(&layer_nodes, &adj, &predecessors);
+
+    // --- Sugiyama phase 3: coordinate assignment ---
     let left_margin = if initial.is_some() { 6 } else { 0 };
-    let effective_width = canvas_width.saturating_sub(left_margin);
+    let mut x_coords = sugiyama::assign_coordinates(
+        &reordered,
+        &adj,
+        &sizes,
+        params.gap_x,
+        canvas_width,
+        left_margin,
+    );
 
+    // --- Column gaps with label width awareness ---
+    sugiyama::compute_column_gaps(&mut x_coords, transitions, &id_to_idx, &sizes, params.gap_x);
+
+    // --- Assign y-coordinates (same as before: per-layer y accumulation) ---
+    let mut y = params.top_margin;
     let mut layouts = Vec::with_capacity(node_count);
 
-    for indices in layer_nodes.iter() {
+    for (layer_i, indices) in reordered.iter().enumerate() {
         if indices.is_empty() {
             continue;
         }
         let max_h = indices.iter().map(|&i| sizes[i].h).max().unwrap_or(params.state_height);
-        let total_w: usize =
-            indices.iter().map(|&i| sizes[i].w).sum::<usize>() + (indices.len() - 1) * params.gap_x;
-        let start_x = effective_width.saturating_sub(total_w) / 2 + left_margin;
 
-        let mut x = start_x;
         for &idx in indices {
             let size = sizes[idx];
             layouts.push(StateLayout {
                 id: idx_to_id[idx].to_string(),
                 label: states[idx].label.clone(),
                 state_type: states[idx].state_type,
-                rect: Rect::new(x, y, size.w, size.h),
+                rect: Rect::new(x_coords[idx], y, size.w, size.h),
             });
-            x += size.w + params.gap_x;
         }
+        let _ = layer_i;
         y += max_h + params.gap_y;
     }
 
