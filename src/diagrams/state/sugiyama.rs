@@ -5,22 +5,51 @@
 //! Sugiyama framework. Phase 1 (layering) and phase 4 (edge routing) are
 //! handled by `layout.rs` and `render.rs` respectively.
 //!
-//! The goal is to produce x-coordinates where:
-//! - Vertically connected states (linear chain, no fork) share the same
-//!   column, so `|` legs are aligned.
-//! - Fork children get distinct columns.
-//! - Join nodes are centered between their predecessors.
-//! - Column gaps are wide enough to embed transition labels.
+//! After coordinate assignment, `compute_trans_geoms` produces a single
+//! source of truth for each transition's geometry (corridor width, label
+//! placement, embed decision). `render.rs` reads these pre-computed values
+//! instead of re-deriving them — eliminating the multi-copy inconsistency
+//! that caused repeated alignment bugs.
 
 use crate::diagrams::state::types::Transition;
-use crate::render::widget::Size;
+use crate::render::widget::{Rect, Size};
 use std::collections::HashMap;
 
-/// Phase 2: Reduce edge crossings using the median heuristic.
+/// Pre-computed geometry for a single transition.
 ///
-/// Iterates up (bottom-to-top) and down (top-to-bottom) sweeps, sorting
-/// each layer's nodes by the median position of their neighbours in the
-/// adjacent layer. Returns the best ordering found (lowest crossing count).
+/// This is the **single source of truth** for corridor width, label
+/// placement, and embed decisions. Both `build()` (canvas sizing) and
+/// `draw_external_transition()` (rendering) read from this struct instead
+/// of independently recalculating.
+#[derive(Clone, Debug, Default)]
+pub struct TransGeom {
+    /// Center column of the `from` box.
+    pub from_cx: usize,
+    /// Center column of the `to` box.
+    pub to_cx: usize,
+    /// Left end of the horizontal corridor (= min(from_cx, to_cx)).
+    pub left_x: usize,
+    /// Right end (= max(from_cx, to_cx)).
+    pub right_x: usize,
+    /// Corridor width = right_x - left_x + 1, or 0 if same column.
+    pub corridor_w: usize,
+    /// Whether the label should be embedded in the corridor line.
+    pub embed: bool,
+    /// Wrap width for the label.
+    pub avail: usize,
+    /// X-center for the label block.
+    pub base_x: usize,
+    /// Whether from and to are in the same layer (horizontal arrow).
+    pub same_layer: bool,
+}
+
+/// Result of layout: positioned states + pre-computed transition geometry.
+pub struct LayoutResult {
+    pub layouts: Vec<crate::diagrams::state::layout::StateLayout>,
+    pub trans_geoms: Vec<TransGeom>,
+}
+
+/// Phase 2: Reduce edge crossings using the median heuristic.
 pub fn reduce_crossings(
     layers: &[Vec<usize>],
     adj: &[Vec<usize>],
@@ -30,7 +59,6 @@ pub fn reduce_crossings(
         return Vec::new();
     }
 
-    // Work on a mutable copy.
     let mut current: Vec<Vec<usize>> = layers.to_vec();
     let mut best = current.clone();
     let mut best_crossings = count_total_crossings(&current, adj, predecessors);
@@ -38,13 +66,11 @@ pub fn reduce_crossings(
     const MAX_ROUNDS: usize = 24;
     for round in 0..MAX_ROUNDS {
         if round % 2 == 0 {
-            // Bottom-up sweep: sort each layer by median of successors below.
             for i in (0..current.len().saturating_sub(1)).rev() {
                 let (left, right) = current.split_at_mut(i + 1);
                 sort_by_median(&mut left[i], &right[0], adj);
             }
         } else {
-            // Top-down sweep: sort each layer by median of predecessors above.
             for i in 1..current.len() {
                 let (left, right) = current.split_at_mut(i);
                 sort_by_median(&mut right[0], &left[i - 1], predecessors);
@@ -61,25 +87,20 @@ pub fn reduce_crossings(
     best
 }
 
-/// Sort `layer` nodes by the median position of their neighbours in
-/// `adjacent_layer`.
 fn sort_by_median(layer: &mut [usize], adjacent: &[usize], neighbours_of: &[Vec<usize>]) {
     if layer.len() <= 1 {
         return;
     }
 
-    // Build position map: node index → position in adjacent layer.
     let pos: HashMap<usize, usize> =
         adjacent.iter().enumerate().map(|(pos, &node)| (node, pos)).collect();
 
-    // Compute median neighbour position for each node in layer.
     let medians: Vec<(usize, usize)> = layer
         .iter()
         .map(|&node| {
             let positions: Vec<usize> =
                 neighbours_of[node].iter().filter_map(|nb| pos.get(nb).copied()).collect();
             let median = if positions.is_empty() {
-                // No neighbours: keep relative order (use layer index).
                 layer.iter().position(|&n| n == node).unwrap_or(0)
             } else {
                 positions[positions.len() / 2]
@@ -88,13 +109,11 @@ fn sort_by_median(layer: &mut [usize], adjacent: &[usize], neighbours_of: &[Vec<
         })
         .collect();
 
-    // Sort by median (stable for equal medians).
     layer.sort_by_key(|&node| {
         medians.iter().find(|&&(n, _)| n == node).map(|&(_, m)| m).unwrap_or(0)
     });
 }
 
-/// Count total edge crossings across all adjacent layer pairs.
 fn count_total_crossings(
     layers: &[Vec<usize>],
     adj: &[Vec<usize>],
@@ -107,25 +126,23 @@ fn count_total_crossings(
     total
 }
 
-/// Count crossings between two adjacent layers.
 fn count_layer_pair_crossings(
     upper: &[usize],
     lower: &[usize],
-    adj: &[Vec<usize>],
-    _predecessors: &[Vec<usize>],
+    _adj: &[Vec<usize>],
+    predecessors: &[Vec<usize>],
 ) -> usize {
     let upper_pos: HashMap<usize, usize> = upper.iter().enumerate().map(|(p, &n)| (n, p)).collect();
 
     let mut crossings = 0;
     for (j, &lower_node) in lower.iter().enumerate() {
-        for &upper_node in &_predecessors_placeholder(lower_node, adj) {
+        for &upper_node in &predecessors[lower_node] {
             let Some(&i) = upper_pos.get(&upper_node) else { continue };
-            // Count how many edges from upper to lower cross this one.
             for (j2, &lower_node2) in lower.iter().enumerate() {
                 if j2 <= j {
                     continue;
                 }
-                for &upper_node2 in &_predecessors_placeholder(lower_node2, adj) {
+                for &upper_node2 in &predecessors[lower_node2] {
                     let Some(&i2) = upper_pos.get(&upper_node2) else { continue };
                     if i2 < i {
                         crossings += 1;
@@ -137,26 +154,10 @@ fn count_layer_pair_crossings(
     crossings
 }
 
-/// Helper: get predecessors of a node from the adjacency list (reverse lookup).
-/// This builds predecessors on the fly since we only have `adj`.
-fn _predecessors_placeholder(node: usize, adj: &[Vec<usize>]) -> Vec<usize> {
-    let mut preds = Vec::new();
-    for (i, succs) in adj.iter().enumerate() {
-        if succs.contains(&node) {
-            preds.push(i);
-        }
-    }
-    preds
-}
-
 /// Phase 3: Assign x-coordinates using a simplified Brandes-Köpf approach.
 ///
-/// 1. Build vertical alignment blocks (chains of nodes connected by
-///    "median-direction" edges).
-/// 2. Assign x-coordinates left-to-right, respecting minimum gaps.
-/// 3. Center the whole layout in the canvas.
-///
-/// Returns a `Vec<usize>` of x-coordinates indexed by node index.
+/// Alignment blocks share the same **center column** (not left boundary),
+/// so different-width boxes in the same block have aligned `|` legs.
 pub fn assign_coordinates(
     layers: &[Vec<usize>],
     adj: &[Vec<usize>],
@@ -170,7 +171,6 @@ pub fn assign_coordinates(
         return Vec::new();
     }
 
-    // Build predecessor map.
     let mut predecessors: Vec<Vec<usize>> = vec![Vec::new(); node_count];
     for (i, succs) in adj.iter().enumerate() {
         for &s in succs {
@@ -180,9 +180,6 @@ pub fn assign_coordinates(
         }
     }
 
-    // Build alignment: for each node, find the "aligned" predecessor
-    // (the one whose median direction points to this node).
-    // aligned_up[node] = the node above that this node aligns with (or None).
     let mut aligned_up: Vec<Option<usize>> = vec![None; node_count];
     let mut aligned_down: Vec<Option<usize>> = vec![None; node_count];
 
@@ -192,37 +189,29 @@ pub fn assign_coordinates(
         }
         let upper = &layers[layer_i - 1];
 
-        // For each node in upper layer, its successors' positions in this layer.
-        let mut r = 0usize; // rightmost used position in current layer
+        let mut r = 0usize;
         for &u in upper {
             let succs: Vec<usize> =
                 adj[u].iter().filter(|&&s| layer.contains(&s)).copied().collect();
             if succs.is_empty() {
                 continue;
             }
-            // Median successor position.
             let positions: Vec<usize> =
                 succs.iter().map(|s| layer.iter().position(|&n| n == *s).unwrap_or(0)).collect();
             let med = positions[positions.len() / 2];
 
-            // Find the median-direction successor that is to the right of r.
             for &s in &succs {
                 let p = layer.iter().position(|&n| n == s).unwrap_or(0);
-                if p >= r && p <= med + (positions.len() / 2) {
-                    // Align u → s.
-                    if aligned_up[s].is_none() {
-                        aligned_up[s] = Some(u);
-                        aligned_down[u] = Some(s);
-                        r = p + 1;
-                        break;
-                    }
+                if p >= r && p <= med + (positions.len() / 2) && aligned_up[s].is_none() {
+                    aligned_up[s] = Some(u);
+                    aligned_down[u] = Some(s);
+                    r = p + 1;
+                    break;
                 }
             }
         }
     }
 
-    // Build blocks: each node belongs to a block (chain of aligned nodes).
-    // Block root = topmost node in the chain.
     let mut block_root: Vec<usize> = (0..node_count).collect();
     for n in 0..node_count {
         if let Some(u) = aligned_up[n] {
@@ -249,11 +238,28 @@ pub fn assign_coordinates(
         }
     }
 
-    // Propagate block x to all members (ensure alignment).
+    // Propagate block x to all members.
     for n in 0..node_count {
         let root = block_root[n];
         if let Some(&bx) = block_x.get(&root) {
             x[n] = bx;
+        }
+    }
+
+    // --- Center normalization: align by CENTER column, not left boundary ---
+    // For each block, compute the shared center column and adjust each
+    // member's x so that x + w/2 equals the block center. This ensures
+    // different-width boxes in the same block have aligned `|` legs.
+    let mut block_center: HashMap<usize, usize> = HashMap::new();
+    for n in 0..node_count {
+        let root = block_root[n];
+        let cx = x[n] + sizes[n].w / 2;
+        block_center.entry(root).and_modify(|c| *c = (*c).max(cx)).or_insert(cx);
+    }
+    for n in 0..node_count {
+        let root = block_root[n];
+        if let Some(&cx) = block_center.get(&root) {
+            x[n] = cx.saturating_sub(sizes[n].w / 2);
         }
     }
 
@@ -268,12 +274,7 @@ pub fn assign_coordinates(
     x
 }
 
-/// Phase 3b: Adjust x-coordinates so column gaps are wide enough for
-/// transition labels.
-///
-/// For each transition with a label, the gap between from.x and to.x must
-/// be at least `label_w + 4` (2 cells padding per side). This function
-/// widens gaps by shifting nodes rightward as needed.
+/// Phase 3b: Widen column gaps to fit transition labels.
 pub fn compute_column_gaps(
     x: &mut [usize],
     transitions: &[Transition],
@@ -281,7 +282,6 @@ pub fn compute_column_gaps(
     sizes: &[Size],
     min_gap: usize,
 ) {
-    // Build a list of (from_idx, to_idx, required_gap) for each transition.
     let mut gap_reqs: Vec<(usize, usize, usize)> = Vec::new();
     for t in transitions {
         if t.from == t.to {
@@ -292,40 +292,128 @@ pub fn compute_column_gaps(
         if from_i >= x.len() || to_i >= x.len() {
             continue;
         }
-        if x[from_i] == x[to_i] {
-            continue; // Same column, no gap needed.
+        // Use center distance to match render-side corridor_w.
+        let from_cx = x[from_i] + sizes[from_i].w / 2;
+        let to_cx = x[to_i] + sizes[to_i].w / 2;
+        if from_cx == to_cx {
+            continue;
         }
         if let Some(label) = &t.label {
             let lw = unicode_width::UnicodeWidthStr::width(label.as_str());
-            let needed = lw + 4; // 2 padding per side
+            let needed = lw + 4;
             gap_reqs.push((from_i, to_i, needed));
         } else {
             gap_reqs.push((from_i, to_i, min_gap));
         }
     }
 
-    // Iteratively widen gaps. Sort by from x (leftmost first).
     gap_reqs.sort_by_key(|&(from_i, _, _)| x[from_i]);
 
     for &(from_i, to_i, needed) in &gap_reqs {
-        let from_x = x[from_i];
-        let from_w = sizes[from_i].w;
-        let to_x = x[to_i];
-        let to_w = sizes[to_i].w;
-
-        let (left, left_w, right) =
-            if from_x < to_x { (from_x, from_w, to_x) } else { (to_x, to_w, from_x) };
+        let from_cx = x[from_i] + sizes[from_i].w / 2;
+        let to_cx = x[to_i] + sizes[to_i].w / 2;
+        let (left, left_w, right) = if from_cx < to_cx {
+            (x[from_i], sizes[from_i].w, x[to_i])
+        } else {
+            (x[to_i], sizes[to_i].w, x[from_i])
+        };
 
         let current_gap = right.saturating_sub(left + left_w);
         if current_gap < needed {
             let extra = needed - current_gap;
-            // Shift the right node and all nodes to its right.
             let shift_from = right;
             for xi in x.iter_mut() {
                 if *xi >= shift_from {
                     *xi += extra;
                 }
             }
+        }
+    }
+}
+
+/// Compute the complete geometry for every transition — the **single source
+/// of truth** used by both `build()` (canvas sizing) and
+/// `draw_external_transition()` (rendering).
+///
+/// This eliminates the multi-copy inconsistency where corridor width, embed
+/// decision, and label placement were independently recalculated in 4 places.
+pub fn compute_trans_geoms(
+    layouts: &[crate::diagrams::state::layout::StateLayout],
+    transitions: &[Transition],
+    id_to_idx: &HashMap<&str, usize>,
+    canvas_width: usize,
+) -> Vec<TransGeom> {
+    transitions
+        .iter()
+        .map(|t| {
+            let from_i = id_to_idx.get(t.from.as_str()).copied().unwrap_or(0);
+            let to_i = id_to_idx.get(t.to.as_str()).copied().unwrap_or(0);
+
+            if from_i >= layouts.len() || to_i >= layouts.len() || t.from == t.to {
+                return TransGeom::default();
+            }
+
+            let from = &layouts[from_i].rect;
+            let to = &layouts[to_i].rect;
+            let same_layer = from.y == to.y;
+
+            compute_single_geom(from, to, same_layer, t.label.as_deref(), canvas_width)
+        })
+        .collect()
+}
+
+/// Compute geometry for a single transition.
+fn compute_single_geom(
+    from: &Rect,
+    to: &Rect,
+    same_layer: bool,
+    label: Option<&str>,
+    canvas_width: usize,
+) -> TransGeom {
+    let from_cx = from.x + from.w / 2;
+    let to_cx = to.x + to.w / 2;
+
+    if same_layer {
+        // Same-layer: horizontal arrow between two boxes.
+        let (left_x, right_x) =
+            if from_cx < to_cx { (from.x + from.w, to.x) } else { (to.x + to.w, from.x) };
+        let corridor_w = right_x.saturating_sub(left_x);
+        let label_w = label.map(unicode_width::UnicodeWidthStr::width).unwrap_or(0);
+        let embed = corridor_w > 4 && corridor_w >= label_w + 4;
+        let avail =
+            if embed { corridor_w - 4 } else { canvas_width.saturating_sub(left_x + 2).max(2) };
+        let base_x = (left_x + right_x) / 2;
+        TransGeom {
+            from_cx,
+            to_cx,
+            left_x,
+            right_x,
+            corridor_w,
+            embed,
+            avail,
+            base_x,
+            same_layer: true,
+        }
+    } else {
+        // Cross-layer: V-H-V path, corridor is center-to-center.
+        let (left_x, right_x) = if from_cx < to_cx { (from_cx, to_cx) } else { (to_cx, from_cx) };
+        let corridor_w = if right_x > left_x { right_x - left_x + 1 } else { 0 };
+        let label_w = label.map(unicode_width::UnicodeWidthStr::width).unwrap_or(0);
+        let embed = corridor_w > 0 && corridor_w >= label_w + 4;
+        let avail =
+            if embed { corridor_w - 4 } else { canvas_width.saturating_sub(from_cx + 2).max(2) };
+        // For aligned edges (corridor_w == 0), label goes beside the leg.
+        let base_x = if corridor_w == 0 { from_cx } else { (from_cx + to_cx) / 2 };
+        TransGeom {
+            from_cx,
+            to_cx,
+            left_x,
+            right_x,
+            corridor_w,
+            embed,
+            avail,
+            base_x,
+            same_layer: false,
         }
     }
 }
@@ -351,12 +439,10 @@ mod tests {
 
     #[test]
     fn assign_coordinates_linear_chain_aligned() {
-        // A → B → C, all in separate layers, should share same x.
         let sizes = vec![Size::new(14, 3), Size::new(14, 3), Size::new(14, 3)];
         let layers = vec![vec![0], vec![1], vec![2]];
         let adj = vec![vec![1], vec![2], vec![]];
         let x = assign_coordinates(&layers, &adj, &sizes, 6, 80, 0);
-        // All three should be at the same x (centered).
         let cx0 = x[0] + sizes[0].w / 2;
         let cx1 = x[1] + sizes[1].w / 2;
         let cx2 = x[2] + sizes[2].w / 2;
@@ -365,13 +451,56 @@ mod tests {
     }
 
     #[test]
+    fn assign_coordinates_different_width_aligned() {
+        // A(w=14) → B(w=16), should have same center.
+        let sizes = vec![Size::new(14, 3), Size::new(16, 3)];
+        let layers = vec![vec![0], vec![1]];
+        let adj = vec![vec![1], vec![]];
+        let x = assign_coordinates(&layers, &adj, &sizes, 6, 80, 0);
+        let cx0 = x[0] + sizes[0].w / 2;
+        let cx1 = x[1] + sizes[1].w / 2;
+        assert_eq!(
+            cx0, cx1,
+            "different-width aligned boxes should share center: {} vs {}",
+            cx0, cx1
+        );
+    }
+
+    #[test]
     fn assign_coordinates_fork_children_distinct() {
-        // A → B, A → C, B and C in same layer.
         let sizes = vec![Size::new(14, 3), Size::new(14, 3), Size::new(14, 3)];
         let layers = vec![vec![0], vec![1, 2]];
         let adj = vec![vec![1, 2], vec![], vec![]];
         let x = assign_coordinates(&layers, &adj, &sizes, 6, 80, 0);
-        // B and C should be at different x.
         assert_ne!(x[1], x[2], "fork children should be at different x");
+    }
+
+    #[test]
+    fn compute_trans_geoms_cross_layer() {
+        let layouts = vec![
+            crate::diagrams::state::layout::StateLayout {
+                id: "a".into(),
+                label: "A".into(),
+                state_type: crate::diagrams::state::types::StateType::Simple,
+                rect: Rect::new(33, 2, 14, 3),
+            },
+            crate::diagrams::state::layout::StateLayout {
+                id: "b".into(),
+                label: "B".into(),
+                state_type: crate::diagrams::state::types::StateType::Simple,
+                rect: Rect::new(33, 8, 14, 3),
+            },
+        ];
+        let transitions =
+            vec![Transition { from: "a".into(), to: "b".into(), label: Some("go".into()) }];
+        let mut id_map = HashMap::new();
+        id_map.insert("a", 0);
+        id_map.insert("b", 1);
+        let geoms = compute_trans_geoms(&layouts, &transitions, &id_map, 80);
+        assert_eq!(geoms.len(), 1);
+        // Same column (cx=40), corridor_w=0, not embedded.
+        assert_eq!(geoms[0].corridor_w, 0);
+        assert!(!geoms[0].embed);
+        assert!(!geoms[0].same_layer);
     }
 }

@@ -9,6 +9,7 @@ use std::fmt;
 
 use crate::canvas::{Canvas, Layer};
 use crate::diagrams::state::layout::{LayoutParams, StateLayout, layout_states};
+use crate::diagrams::state::sugiyama;
 use crate::diagrams::state::types::{StateNode, StateType, Transition};
 use crate::error::{FigoError, Result};
 use crate::render::node::Node;
@@ -81,6 +82,7 @@ impl<'a> StateDiagram<'a> {
         // Sugiyama crossing reduction + coordinate assignment is now done
         // inside layout_states, so recenter and expand_corridors are no
         // longer needed — column gaps already account for label widths.
+
         let label_rows = compute_label_rows(&self.transitions, &layouts);
 
         // Compute per-gap max row and expand gaps accordingly.
@@ -94,33 +96,33 @@ impl<'a> StateDiagram<'a> {
         }
 
         let id_to_layout = build_id_map(&layouts);
+
+        // --- Single source of truth: compute all transition geometry once ---
+        let id_to_idx: std::collections::HashMap<&str, usize> =
+            self.states.iter().enumerate().map(|(i, s)| (s.id.as_str(), i)).collect();
+        let trans_geoms =
+            sugiyama::compute_trans_geoms(&layouts, &self.transitions, &id_to_idx, self.width);
+
         let mut total_w = compute_canvas_width(&layouts, &params).max(self.width);
 
         // Ensure canvas is wide enough for all transition labels.
+        // Uses the pre-computed geometry (single source of truth) instead
+        // of independently recalculating corridor_w / embed / avail.
         for (idx, t) in self.transitions.iter().enumerate() {
             let Some(text) = t.label.as_ref() else { continue };
-            let Some(from) = id_to_layout.get(&t.from) else { continue };
-            let Some(to) = id_to_layout.get(&t.to) else { continue };
-            let from_cx = from.rect.x + from.rect.w / 2;
-            let to_cx = to.rect.x + to.rect.w / 2;
-            // Mirror draw_external_transition's base_x logic exactly.
+            let geom = &trans_geoms[idx];
             let row = label_rows.get(&idx).copied().unwrap_or(0);
-            let fwd = from.rect.y < to.rect.y;
-            let base_x =
-                if row > 0 { if fwd { from_cx } else { to_cx } } else { (from_cx + to_cx) / 2 };
-            // Use the wrapped max line width (not the full label width) for
-            // sizing, since long labels are now wrapped to corridor width.
-            // For same-column, mirror draw_external_transition's avail logic.
-            let corridor_w = if from_cx != to_cx {
-                from_cx.abs_diff(to_cx) + 1
+            let base_x = if row > 0 {
+                let fwd = geom.from_cx <= geom.to_cx;
+                if fwd { geom.from_cx } else { geom.to_cx }
             } else {
-                total_w.saturating_sub(from_cx + 2)
+                geom.base_x
             };
-            // Mirror draw_external_transition's embed logic.
-            let label_w = UnicodeWidthStr::width(text.as_str());
-            let embed = corridor_w > 4 && corridor_w >= label_w + 4;
-            let avail =
-                if embed { corridor_w - 4 } else { total_w.saturating_sub(from_cx + 2).max(2) };
+            let avail = if geom.avail > 0 {
+                geom.avail
+            } else {
+                total_w.saturating_sub(geom.from_cx + 2).max(2)
+            };
             let (_, _, max_lw) = crate::text::wrap_label(text, avail);
             let lw = max_lw;
             let lx = base_x.saturating_sub(lw / 2);
@@ -146,6 +148,7 @@ impl<'a> StateDiagram<'a> {
                 &ctx,
                 total_w,
                 &layouts,
+                &trans_geoms,
             );
         }
 
@@ -648,6 +651,7 @@ fn draw_accepting_state(
 
 // ── Transition drawing ────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn draw_transitions(
     surface: &mut Surface<'_>,
     transitions: &[Transition],
@@ -656,6 +660,7 @@ fn draw_transitions(
     ctx: &PaintContext,
     canvas_width: usize,
     layouts: &[StateLayout],
+    trans_geoms: &[sugiyama::TransGeom],
 ) {
     for (idx, t) in transitions.iter().enumerate() {
         let Some(from) = id_to_layout.get(&t.from) else { continue };
@@ -667,6 +672,7 @@ fn draw_transitions(
         }
 
         let row = label_rows.get(&idx).copied().unwrap_or(0);
+        let geom = &trans_geoms[idx];
         draw_external_transition(
             surface,
             from.rect,
@@ -676,6 +682,7 @@ fn draw_transitions(
             ctx,
             canvas_width,
             layouts,
+            geom,
         );
     }
 }
@@ -690,19 +697,19 @@ fn draw_external_transition(
     ctx: &PaintContext,
     canvas_width: usize,
     all_layouts: &[StateLayout],
+    geom: &sugiyama::TransGeom,
 ) {
     let glyphs = BorderStyle::Single.glyphs(ctx.charset);
-    let from_cx = from.x + from.w / 2;
-    let to_cx = to.x + to.w / 2;
+    let from_cx = geom.from_cx;
+    let to_cx = geom.to_cx;
 
     // Same-layer transition: draw a direct horizontal arrow between
     // the two boxes instead of a vertical corridor.
-    if from.y == to.y && from_cx != to_cx {
-        let (left, right, left_to_right) =
-            if from_cx < to_cx { (from, to, true) } else { (to, from, false) };
+    if geom.same_layer && from_cx != to_cx {
+        let left_to_right = from_cx < to_cx;
         let ly = from.y + from.h / 2;
-        let left_edge = left.x + left.w;
-        let right_edge = right.x;
+        let left_edge = geom.left_x;
+        let right_edge = geom.right_x;
         if right_edge > left_edge {
             surface.put_horizontal(
                 left_edge,
@@ -727,17 +734,9 @@ fn draw_external_transition(
 
         if let Some(text) = label {
             use crate::text::wrap_label;
-            let corridor_w = right_edge.saturating_sub(left_edge);
-            // Embed label in the arrow line, with `---` padding on both sides.
-            // When the gap is too narrow, fall back to canvas width so the
-            // label wraps to a reasonable width instead of stacking chars.
-            let avail = if corridor_w > 4 {
-                corridor_w - 4
-            } else {
-                canvas_width.saturating_sub(left_edge + 2).max(2)
-            };
+            let avail = geom.avail;
             let (lines, n, _) = wrap_label(text, avail);
-            let mid_x = (left_edge + right_edge) / 2;
+            let mid_x = geom.base_x;
             let block_top = ly.saturating_sub(n / 2);
 
             for (i, line) in lines.iter().enumerate() {
@@ -749,7 +748,7 @@ fn draw_external_transition(
                 surface.put_str_layered(label_x, label_y, line, Layer::Label);
 
                 // Restore `---` on both sides of the label on the corridor row.
-                if corridor_w > 0 {
+                if geom.corridor_w > 0 {
                     let label_end = label_x + lw;
                     if label_x > left_edge {
                         surface.put_horizontal(
@@ -777,30 +776,15 @@ fn draw_external_transition(
 
     let forward = from.y < to.y;
 
-    // Anchor points: exit from the edge of `from` that faces `to`.
-    let from_anchor = if forward {
-        from.y + from.h // source bottom, one cell below
-    } else {
-        from.y // source top
-    };
-    let to_anchor = if forward {
-        to.y // target top
-    } else {
-        to.y + to.h - 1 // target bottom
-    };
+    let from_anchor = if forward { from.y + from.h } else { from.y };
+    let to_anchor = if forward { to.y } else { to.y + to.h - 1 };
 
-    // Horizontal corridor in the gap between the two anchor points.
     let route_y = (from_anchor + to_anchor) / 2;
 
-    // Horizontal corridor endpoints, clamped to canvas bounds.
-    let (left_x, right_x) = if from_cx < to_cx { (from_cx, to_cx) } else { (to_cx, from_cx) };
-    let right_x = right_x.min(canvas_width.saturating_sub(1));
+    let left_x = geom.left_x;
+    let right_x = geom.right_x.min(canvas_width.saturating_sub(1));
 
-    // Repeatedly check if effective_route_y falls inside another state's
-    // box (not from/to). Push the corridor to the nearest empty row above
-    // the box (or below if the box is at the top), then re-scan because
-    // the new row may itself land on another box. Bounded by the number
-    // of layouts to guarantee termination.
+    // Repeatedly check if effective_route_y falls inside another state's box.
     let mut effective_route_y = route_y;
     for _ in 0..=all_layouts.len() {
         let mut pushed = false;
@@ -863,36 +847,18 @@ fn draw_external_transition(
     let arrow_y = if forward { to.y } else { to.y + to.h - 1 };
     surface.put_layered(to_cx, arrow_y, arrow_ch, Layer::ConnectorEnd);
 
-    // Label embedded in the corridor/vertical line (replaces a segment).
-    // row 0: label sits on effective_route_y (the corridor/line itself).
-    // row > 0: label sits above to avoid x overlap with another label.
+    // Label: use pre-computed geometry (single source of truth).
     if let Some(text) = label {
         use crate::text::wrap_label;
 
-        let corridor_w = if right_x > left_x { right_x - left_x + 1 } else { 0 };
-
-        // Embed the label in the corridor only when the corridor is wide
-        // enough to hold the label (with 4 cells of `---` padding) on a
-        // single line. Otherwise wrap to the remaining canvas width and
-        // place the label beside the vertical line.
-        let label_w = UnicodeWidthStr::width(text);
-        let embed_in_corridor = corridor_w > 4 && corridor_w >= label_w + 4;
-
-        let avail = if embed_in_corridor {
-            corridor_w - 4
-        } else {
-            canvas_width.saturating_sub(from_cx + 2).max(2)
-        };
+        let corridor_w = geom.corridor_w;
+        let embed_in_corridor = geom.embed;
+        let avail = geom.avail;
 
         let (lines, num_lines, _) = wrap_label(text, avail);
 
-        // row 0: label on corridor (center of from_cx/to_cx).
-        // row>0: label on the vertical leg that exists above route_y:
-        //   forward → from-leg (from_cx), reverse → to-leg (to_cx).
-        let base_x =
-            if row > 0 { if forward { from_cx } else { to_cx } } else { (from_cx + to_cx) / 2 };
+        let base_x = if row > 0 { if forward { from_cx } else { to_cx } } else { geom.base_x };
 
-        // Center the multi-line block on effective_route_y.
         let block_top = if row == 0 {
             effective_route_y.saturating_sub(num_lines / 2)
         } else {
@@ -906,7 +872,7 @@ fn draw_external_transition(
             let mut label_x = base_x.saturating_sub(lw / 2);
             label_x = label_x.min(canvas_width.saturating_sub(lw));
             // Clamp label to corridor bounds when embedded, leaving room
-            // for `+` at the junction points (left_x and right_x columns).
+            // for `+` at the junction points.
             if embed_in_corridor && lw < corridor_w {
                 label_x = label_x.max(left_x).min(right_x + 1 - lw);
             }
@@ -915,12 +881,7 @@ fn draw_external_transition(
             label_positions.push((label_x, lw, label_y));
         }
 
-        // Restore corridor `---` ONLY on the corridor row (effective_route_y),
-        // whenever a horizontal corridor exists (embedded or not). This
-        // ensures the corridor stays visible even when the label is too wide
-        // to embed and covers part of the `---` line. Also write `+` at the
-        // junction points (where vertical legs meet the corridor) since
-        // repair_ascii_junctions may miss them when label covers neighbors.
+        // Restore corridor `---` ONLY on the corridor row + write `+` at junctions.
         if corridor_w > 0
             && effective_route_y >= block_top
             && effective_route_y < block_top + num_lines
@@ -946,9 +907,6 @@ fn draw_external_transition(
                         Layer::Connector,
                     );
                 }
-                // Write `+` at corridor junction points where vertical legs
-                // meet the horizontal corridor. Use the same layer as the
-                // corridor so it's consistent.
                 let junction_ch = if ctx.charset == Charset::Ascii { '+' } else { '┼' };
                 if lx > left_x {
                     surface.put_layered(left_x, effective_route_y, junction_ch, Layer::Connector);
@@ -959,10 +917,7 @@ fn draw_external_transition(
             }
         }
 
-        // Restore vertical leg `|` around the label block so the connector
-        // stays continuous. For row>0 this is always needed. For row==0
-        // with a corridor, the label may cover from_cx; restore the segment
-        // below the label to the corridor row.
+        // Restore vertical leg `|` around the label block.
         if row > 0 {
             let vcol = if forward { from_cx } else { to_cx };
             let top_y = if forward { from_anchor } else { to_anchor };
