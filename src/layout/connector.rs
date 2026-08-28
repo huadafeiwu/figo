@@ -348,25 +348,37 @@ impl Connector {
             let avail = len.saturating_sub(4).max(2).min(w_limit);
             let (lines, n, _) = wrap_label(label, avail);
             let block_top = y.saturating_sub(n / 2);
+
+            // Draw all label lines first.
+            let mut label_positions: Vec<(usize, usize, usize)> = Vec::new();
             for (i, line) in lines.iter().enumerate() {
                 let line_w = UnicodeWidthStr::width(line.as_str());
                 let base_x = center.saturating_sub(line_w / 2).max(x);
                 let lx = base_x.min((x + len).saturating_sub(line_w)).max(x);
                 let label_y = (block_top + i).max(sy).min(ty);
                 canvas.put_str_layered(lx, label_y, line, Layer::Label, None);
-                // Restore --- on both sides.
-                let label_end = lx + line_w;
-                if lx > x {
-                    canvas.put_horizontal_layered(x, label_y, lx - x, h_ch, Layer::Connector);
-                }
-                if label_end <= x + len {
-                    canvas.put_horizontal_layered(
-                        label_end,
-                        label_y,
-                        (x + len).saturating_sub(label_end) + 1,
-                        h_ch,
-                        Layer::Connector,
-                    );
+                label_positions.push((lx, line_w, label_y));
+            }
+
+            // Restore `---` ONLY on the corridor row (segment y), not on
+            // every label row. This prevents spurious `---` on non-corridor
+            // rows and stray `+` junctions.
+            if y >= block_top && y < block_top + n {
+                let idx = y - block_top;
+                if let Some(&(lx, line_w, label_y)) = label_positions.get(idx) {
+                    let label_end = lx + line_w;
+                    if lx > x {
+                        canvas.put_horizontal_layered(x, label_y, lx - x, h_ch, Layer::Connector);
+                    }
+                    if label_end <= x + len {
+                        canvas.put_horizontal_layered(
+                            label_end,
+                            label_y,
+                            (x + len).saturating_sub(label_end) + 1,
+                            h_ch,
+                            Layer::Connector,
+                        );
+                    }
                 }
             }
             return;

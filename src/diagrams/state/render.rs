@@ -684,6 +684,54 @@ fn draw_external_transition(
     let glyphs = BorderStyle::Single.glyphs(ctx.charset);
     let from_cx = from.x + from.w / 2;
     let to_cx = to.x + to.w / 2;
+
+    // Same-layer transition: draw a direct horizontal arrow between
+    // the two boxes instead of a vertical corridor.
+    if from.y == to.y && from_cx != to_cx {
+        let (left, right, left_to_right) = if from_cx < to_cx {
+            (from, to, true)
+        } else {
+            (to, from, false)
+        };
+        let ly = from.y + from.h / 2;
+        let left_edge = left.x + left.w;
+        let right_edge = right.x;
+        if right_edge > left_edge {
+            surface.put_horizontal(
+                left_edge,
+                ly,
+                right_edge - left_edge,
+                glyphs.horizontal,
+                Layer::Connector,
+            );
+        }
+        let arrow = if left_to_right {
+            match ctx.charset {
+                Charset::Ascii => '>',
+                Charset::Unicode => '▶',
+            }
+        } else {
+            match ctx.charset {
+                Charset::Ascii => '<',
+                Charset::Unicode => '◀',
+            }
+        };
+        surface.put_layered(right_edge, ly, arrow, Layer::ConnectorEnd);
+
+        if let Some(text) = label {
+            use crate::text::wrap_label;
+            let avail = right_edge.saturating_sub(left_edge).max(2);
+            let (lines, n, _) = wrap_label(text, avail);
+            let mid_x = (left_edge + right_edge) / 2;
+            for (i, line) in lines.iter().enumerate() {
+                let lw = UnicodeWidthStr::width(line.as_str());
+                let lx = mid_x.saturating_sub(lw / 2);
+                surface.put_str_layered(lx, ly.saturating_sub(n) + i, line, Layer::Label);
+            }
+        }
+        return;
+    }
+
     let forward = from.y < to.y;
 
     // Anchor points: exit from the edge of `from` that faces `to`.
@@ -819,46 +867,57 @@ fn draw_external_transition(
             effective_route_y.saturating_sub(row * 3).saturating_sub(num_lines / 2)
         };
 
+        // Draw all label lines first.
+        let mut label_positions: Vec<(usize, usize, usize)> = Vec::new();
         for (i, line) in lines.iter().enumerate() {
             let lw = UnicodeWidthStr::width(line.as_str());
             let mut label_x = base_x.saturating_sub(lw / 2);
-            // Right-edge clamp.
             label_x = label_x.min(canvas_width.saturating_sub(lw));
-            // Corridor clamping — keep label within corridor. Only when
-            // the label is embedded in a wide-enough corridor.
             if embed_in_corridor && lw < corridor_w {
                 label_x = label_x.max(left_x).min(right_x + 1 - lw);
             }
             let label_y = block_top + i;
             surface.put_str_layered(label_x, label_y, line, Layer::Label);
+            label_positions.push((label_x, lw, label_y));
+        }
 
-            // Restore corridor `---` on both sides of the label whenever
-            // there is a horizontal corridor (embedded or not).
-            if corridor_w > 0 {
-                let label_end = label_x + lw;
-                if label_x > left_x {
-                    surface.put_horizontal(
-                        left_x,
-                        label_y,
-                        label_x - left_x,
-                        glyphs.horizontal,
-                        Layer::Connector,
-                    );
-                }
-                if label_end <= right_x {
-                    surface.put_horizontal(
-                        label_end,
-                        label_y,
-                        right_x - label_end + 1,
-                        glyphs.horizontal,
-                        Layer::Connector,
-                    );
+        // Restore corridor `---` ONLY on the corridor row (effective_route_y),
+        // not on every label row. This prevents spurious `---` on non-corridor
+        // rows and stray `+` junctions where vertical legs cross them.
+        if corridor_w > 0 {
+            if effective_route_y >= block_top
+                && effective_route_y < block_top + num_lines
+            {
+                let idx = effective_route_y - block_top;
+                if let Some(&(lx, lw, _)) = label_positions.get(idx) {
+                    let label_end = lx + lw;
+                    if lx > left_x {
+                        surface.put_horizontal(
+                            left_x,
+                            effective_route_y,
+                            lx - left_x,
+                            glyphs.horizontal,
+                            Layer::Connector,
+                        );
+                    }
+                    if label_end <= right_x {
+                        surface.put_horizontal(
+                            label_end,
+                            effective_route_y,
+                            right_x - label_end + 1,
+                            glyphs.horizontal,
+                            Layer::Connector,
+                        );
+                    }
                 }
             }
         }
 
-        // For row>0, restore vertical leg above and below the label so the
-        // arrowhead stays connected to the corridor.
+        // Restore vertical leg `|` around the label block so the connector
+        // stays continuous. For row>0 this is always needed. For row==0
+        // non-embedded (label above corridor), the label may cover the
+        // from_cx column, so restore the segment below the label down to
+        // the corridor row.
         if row > 0 {
             let vcol = if forward { from_cx } else { to_cx };
             let top_y = if forward { from_anchor } else { to_anchor };
@@ -866,6 +925,11 @@ fn draw_external_transition(
             for ly in leg_top..block_top {
                 surface.put_layered(vcol, ly, glyphs.vertical, Layer::Connector);
             }
+            for ly in (block_top + num_lines)..=effective_route_y {
+                surface.put_layered(vcol, ly, glyphs.vertical, Layer::Connector);
+            }
+        } else if !embed_in_corridor && corridor_w > 0 {
+            let vcol = if forward { from_cx } else { to_cx };
             for ly in (block_top + num_lines)..=effective_route_y {
                 surface.put_layered(vcol, ly, glyphs.vertical, Layer::Connector);
             }
