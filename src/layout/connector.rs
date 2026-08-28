@@ -370,7 +370,7 @@ impl Connector {
                         canvas.put_horizontal_layered(
                             label_end,
                             label_y,
-                            (x + len).saturating_sub(label_end) + 1,
+                            (x + len).saturating_sub(label_end),
                             h_ch,
                             Layer::Connector,
                         );
@@ -383,8 +383,14 @@ impl Connector {
                     if lx > x {
                         canvas.put_layered(x, label_y, junction_ch, Layer::Connector, None);
                     }
-                    if label_end <= x + len {
-                        canvas.put_layered(x + len, label_y, junction_ch, Layer::Connector, None);
+                    if label_end < x + len {
+                        canvas.put_layered(
+                            x + len - 1,
+                            label_y,
+                            junction_ch,
+                            Layer::Connector,
+                            None,
+                        );
                     }
                 }
             }

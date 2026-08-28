@@ -78,12 +78,12 @@ impl<'a> StateDiagram<'a> {
         let mut layouts =
             layout_states(&self.states, &self.transitions, self.initial, self.width, &params);
 
-        // Expand horizontal spacing so corridors are wide enough for labels.
-        expand_corridors_for_labels(&mut layouts, &self.transitions, &params, self.width);
-
-        // Recenter each layer within the canvas width after corridor
-        // expansion may have pushed states rightward.
+        // Recenter first, then expand corridors. If expand runs before
+        // recenter, recenter's single-state centering overrides the
+        // corridor widening (sets rect.x = canvas_width/2 - w/2),
+        // undoing the expansion for single-column layers.
         recenter_layouts(&mut layouts, self.width);
+        expand_corridors_for_labels(&mut layouts, &self.transitions, &params, self.width);
 
         let label_rows = compute_label_rows(&self.transitions, &layouts);
 
@@ -406,7 +406,23 @@ fn expand_corridors_for_labels(
         if from_cx == to_cx {
             continue;
         }
-        let corridor_w = from_cx.abs_diff(to_cx) + 1;
+        // For cross-layer transitions, the corridor is the horizontal
+        // distance between the two center columns (V-H-V path).
+        // For same-layer transitions, the corridor is the gap between
+        // the two box edges (draw uses edge distance, not center distance).
+        // Use the same measurement the draw code uses to avoid mismatch.
+        let corridor_w = if layouts[from_idx].rect.y == layouts[to_idx].rect.y {
+            // Same layer: gap between box edges
+            let (left_rect, right_rect) = if from_cx < to_cx {
+                (&layouts[from_idx].rect, &layouts[to_idx].rect)
+            } else {
+                (&layouts[to_idx].rect, &layouts[from_idx].rect)
+            };
+            right_rect.x.saturating_sub(left_rect.x + left_rect.w)
+        } else {
+            // Cross-layer: center distance
+            from_cx.abs_diff(to_cx) + 1
+        };
         // Use the full unwrapped label width to decide whether the corridor
         // needs expanding. This ensures the corridor is widened enough to
         // fit the label on a single line whenever possible.

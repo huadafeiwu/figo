@@ -284,8 +284,36 @@ impl Flowchart {
         let mut out: Vec<Option<PositionedNode>> = vec![None; self.nodes.len()];
 
         for (layer_i, layer_indices) in layer_positions.iter().enumerate() {
+            // Calculate gap_x: default 6, but expand if labels need more.
+            let mut gap_x = 6usize;
+            // Check connections within this layer for label width.
+            for i in 0..layer_indices.len().saturating_sub(1) {
+                let left_idx = layer_indices[i];
+                let right_idx = layer_indices[i + 1];
+                // Find connections between these two nodes.
+                for conn in &self.connections {
+                    let (Some(&from_i), Some(&to_i)) =
+                        (id_to_idx.get(conn.from.as_str()), id_to_idx.get(conn.to.as_str()))
+                    else {
+                        continue;
+                    };
+                    let is_pair = (from_i == left_idx && to_i == right_idx)
+                        || (from_i == right_idx && to_i == left_idx);
+                    if !is_pair {
+                        continue;
+                    }
+                    if let Some(label) = &conn.label {
+                        let lw = unicode_width::UnicodeWidthStr::width(label.as_str());
+                        let needed = lw + 4;
+                        if needed > gap_x {
+                            gap_x = needed.min(self.width / 2);
+                        }
+                    }
+                }
+            }
+
             let total_w: usize = layer_indices.iter().map(|&idx| dims[idx].0).sum::<usize>()
-                + layer_indices.len().saturating_sub(1) * 6;
+                + layer_indices.len().saturating_sub(1) * gap_x;
             // Single-node layers align to global canvas center so that
             // vertical connectors between layers stay in the same column.
             let start_x = if layer_indices.len() == 1 {
@@ -301,7 +329,7 @@ impl Flowchart {
                     node: self.nodes[idx].clone(),
                     rect: Rect::new(x, y, w, h),
                 });
-                x += w + 6;
+                x += w + gap_x;
             }
             // Grow the stride if labels in this gap need more rows.
             let label_lines = max_label_lines_per_gap.get(&layer_i).copied().unwrap_or(0).max(1);
