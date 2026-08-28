@@ -98,8 +98,12 @@ impl<'a> StateDiagram<'a> {
         let id_to_layout = build_id_map(&layouts);
 
         // --- Single source of truth: compute all transition geometry once ---
+        // Re-sort layouts to declaration order so that layouts[i] == states[i].
+        // apply_gap_expansion sorts by y, breaking the declaration order
+        // established by layout_states.
         let id_to_idx: std::collections::HashMap<&str, usize> =
             self.states.iter().enumerate().map(|(i, s)| (s.id.as_str(), i)).collect();
+        layouts.sort_by_key(|l| id_to_idx[l.id.as_str()]);
         let trans_geoms =
             sugiyama::compute_trans_geoms(&layouts, &self.transitions, &id_to_idx, self.width);
 

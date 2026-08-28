@@ -173,6 +173,12 @@ pub fn layout_states(
         y += max_h + params.gap_y;
     }
 
+    // Sort layouts back to original declaration order so that
+    // `layouts[i]` corresponds to `states[i]`. The layer iteration above
+    // pushes in layer order, which may differ from declaration order.
+    // Without this, `compute_trans_geoms` (which indexes by declaration
+    // order) would read the wrong rect for each state.
+    layouts.sort_by_key(|l| id_to_idx[l.id.as_str()]);
     layouts
 }
 
