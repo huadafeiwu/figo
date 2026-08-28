@@ -308,32 +308,28 @@ impl Connector {
 
         let has_h = path.iter().any(|s| matches!(s, Segment::H { .. }));
         if !has_h {
-            // Purely vertical: label beside the line. For downward flow
-            // (sy < ty) the label sits just below the source; for upward
-            // flow (sy > ty) it sits just above the source so it stays
-            // within the line segment [ty, sy]. The `|` is restored on
-            // the full segment — the Label layer covers it visually where
-            // the label text sits.
+            // Purely vertical: label embedded IN the vertical line. The
+            // label text covers `|` on its rows; `|` is restored above and
+            // below the label block so the connector stays continuous.
             let avail = w_limit.saturating_sub(sx + 2).max(2).min(w_limit);
             let (lines, n, _) = wrap_label(label, avail);
 
             let downward = sy <= ty;
             let block_top = if downward { sy + 1 } else { sy.saturating_sub(n) };
+
+            // Draw label lines centered on the vertical line column sx.
             for (i, line) in lines.iter().enumerate() {
                 let line_w = UnicodeWidthStr::width(line.as_str());
-                // Place the label to the right of the line when there is
-                // room; otherwise to the left so it never covers `|`.
-                let right_x = (sx + 1).min(w_limit.saturating_sub(line_w));
-                let lx = if right_x > sx {
-                    right_x
-                } else {
-                    sx.saturating_sub(line_w)
-                };
+                let lx = sx.saturating_sub(line_w / 2);
                 canvas.put_str_layered(lx, block_top + i, line, Layer::Label, None);
             }
 
+            // Restore `|` above and below the label block.
             let (lo, hi) = if downward { (sy, ty) } else { (ty, sy) };
-            for ly in lo..=hi {
+            for ly in lo..block_top {
+                canvas.put_layered(sx, ly, v_ch, Layer::Connector, None);
+            }
+            for ly in (block_top + n)..=hi {
                 canvas.put_layered(sx, ly, v_ch, Layer::Connector, None);
             }
             return;

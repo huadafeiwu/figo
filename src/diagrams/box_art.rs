@@ -8,8 +8,7 @@ use std::fmt;
 use crate::canvas::Canvas;
 use crate::error::{FigoError, Result};
 use crate::style::{Alignment, BorderStyle, Charset, HAlign, Padding, VAlign};
-use crate::text::{align_horizontal, word_wrap};
-use unicode_width::UnicodeWidthChar;
+use crate::text::{align_horizontal, wrap_label, word_wrap};
 
 /// Draw a bordered box with optional title and content.
 ///
@@ -113,7 +112,16 @@ impl<'a> BoxArt<'a> {
 
         // Calculate height
         let content_height = content_lines.len();
-        let inner_height = self.padding.vertical * 2 + content_height;
+        // Wrap title to available width (no truncation). Extra title lines
+        // add to the box height so no characters are lost.
+        let title_lines: Vec<String> = match self.title {
+            Some(t) if !t.is_empty() && self.width > 4 => {
+                wrap_label(t, self.width.saturating_sub(4)).0
+            }
+            _ => Vec::new(),
+        };
+        let title_extra = title_lines.len().saturating_sub(1);
+        let inner_height = self.padding.vertical * 2 + content_height + title_extra;
         let total_height = (inner_height + 2).max(3); // minimum 3 rows for visible borders
 
         let mut canvas = Canvas::new(self.width, total_height);
@@ -121,35 +129,24 @@ impl<'a> BoxArt<'a> {
         // Draw outer border
         canvas.draw_rect(0, 0, self.width, total_height, &glyphs)?;
 
-        // Draw title in the top border if given
-        if let Some(title) = self.title {
-            if !title.is_empty() && self.width > 2 {
-                let max_title = self.width.saturating_sub(4);
-                let display: String = {
-                    let mut s = String::new();
-                    let mut w = 0usize;
-                    for ch in title.chars() {
-                        let cw = UnicodeWidthChar::width(ch).unwrap_or(1);
-                        if w + cw > max_title {
-                            break;
-                        }
-                        w += cw;
-                        s.push(ch);
-                    }
-                    s
-                };
-                // Place title left-aligned after the top-left corner
-                let start = 2;
-                canvas.put_str(start, 0, &format!(" {display} "));
+        // Draw title: first line embedded in the top border, subsequent
+        // lines on the rows immediately below the border.
+        if !title_lines.is_empty() {
+            let start = 2;
+            // First line in the border row (row 0).
+            canvas.put_str(start, 0, &format!(" {} ", title_lines[0]));
+            // Extra title lines just below the border.
+            for (i, line) in title_lines.iter().skip(1).enumerate() {
+                canvas.put_str(start, 1 + i, &format!(" {} ", line));
             }
         }
 
-        // Vertical alignment for content
+        // Vertical alignment for content (offset by extra title rows)
         let content_start_y = match self.align.vertical {
-            VAlign::Top => 1 + self.padding.vertical,
-            VAlign::Middle => 1 + (inner_height.saturating_sub(content_height)) / 2,
+            VAlign::Top => 1 + self.padding.vertical + title_extra,
+            VAlign::Middle => 1 + title_extra + (inner_height.saturating_sub(content_height + title_extra)) / 2,
             VAlign::Bottom => {
-                1 + inner_height.saturating_sub(self.padding.vertical + content_height)
+                1 + title_extra + inner_height.saturating_sub(self.padding.vertical + content_height)
             }
         };
 

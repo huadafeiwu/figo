@@ -254,6 +254,13 @@ impl GanttChart {
                     glyphs.vertical,
                     Layer::Label,
                 );
+                // At the header separator row (y=2), draw a cross `┼`/`+`
+                // instead of `│` so the junction is visually correct.
+                let cross = match self.charset {
+                    Charset::Ascii => '+',
+                    Charset::Unicode => '┼',
+                };
+                canvas.put_layered(today_x, 2, cross, Layer::Label, None);
             }
         }
 
