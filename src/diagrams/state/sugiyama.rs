@@ -263,6 +263,22 @@ pub fn assign_coordinates(
         }
     }
 
+    // --- Collision resolution: after center normalization, boxes in the
+    // same layer may overlap. Sort by current x, then sweep left-to-right
+    // and push overlapping boxes rightward, preserving min_gap.
+    for layer in layers.iter() {
+        let mut sorted: Vec<usize> = layer.to_vec();
+        sorted.sort_by_key(|&n| x[n]);
+        let mut prev_right: Option<usize> = None;
+        for &node in &sorted {
+            let min_x = prev_right.map(|r| r + min_gap).unwrap_or(0);
+            if x[node] < min_x {
+                x[node] = min_x;
+            }
+            prev_right = Some(x[node] + sizes[node].w);
+        }
+    }
+
     // Center globally.
     let max_right = x.iter().zip(sizes.iter()).map(|(&xi, s)| xi + s.w).max().unwrap_or(0);
     let total_w = max_right;
