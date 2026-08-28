@@ -8,7 +8,7 @@ use std::fmt;
 use crate::canvas::Canvas;
 use crate::error::{FigoError, Result};
 use crate::style::{Alignment, BorderStyle, Charset, HAlign, Padding, VAlign};
-use crate::text::{align_horizontal, wrap_label, word_wrap};
+use crate::text::{align_horizontal, word_wrap, wrap_label};
 
 /// Draw a bordered box with optional title and content.
 ///
@@ -144,9 +144,12 @@ impl<'a> BoxArt<'a> {
         // Vertical alignment for content (offset by extra title rows)
         let content_start_y = match self.align.vertical {
             VAlign::Top => 1 + self.padding.vertical + title_extra,
-            VAlign::Middle => 1 + title_extra + (inner_height.saturating_sub(content_height + title_extra)) / 2,
+            VAlign::Middle => {
+                1 + title_extra + (inner_height.saturating_sub(content_height + title_extra)) / 2
+            }
             VAlign::Bottom => {
-                1 + title_extra + inner_height.saturating_sub(self.padding.vertical + content_height)
+                1 + title_extra
+                    + inner_height.saturating_sub(self.padding.vertical + content_height)
             }
         };
 

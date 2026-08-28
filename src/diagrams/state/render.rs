@@ -123,11 +123,8 @@ impl<'a> StateDiagram<'a> {
             // Mirror draw_external_transition's embed logic.
             let label_w = UnicodeWidthStr::width(text.as_str());
             let embed = corridor_w > 4 && corridor_w >= label_w + 4;
-            let avail = if embed {
-                corridor_w - 4
-            } else {
-                total_w.saturating_sub(from_cx + 2).max(2)
-            };
+            let avail =
+                if embed { corridor_w - 4 } else { total_w.saturating_sub(from_cx + 2).max(2) };
             let (_, _, max_lw) = crate::text::wrap_label(text, avail);
             let lw = max_lw;
             let lx = base_x.saturating_sub(lw / 2);
@@ -687,11 +684,8 @@ fn draw_external_transition(
     // Same-layer transition: draw a direct horizontal arrow between
     // the two boxes instead of a vertical corridor.
     if from.y == to.y && from_cx != to_cx {
-        let (left, right, left_to_right) = if from_cx < to_cx {
-            (from, to, true)
-        } else {
-            (to, from, false)
-        };
+        let (left, right, left_to_right) =
+            if from_cx < to_cx { (from, to, true) } else { (to, from, false) };
         let ly = from.y + from.h / 2;
         let left_edge = left.x + left.w;
         let right_edge = right.x;
@@ -911,9 +905,7 @@ fn draw_external_transition(
         // and only when the label is embedded in the corridor (label covers
         // part of the `---` line and needs to be restored around it).
         if embed_in_corridor {
-            if effective_route_y >= block_top
-                && effective_route_y < block_top + num_lines
-            {
+            if effective_route_y >= block_top && effective_route_y < block_top + num_lines {
                 let idx = effective_route_y - block_top;
                 if let Some(&(lx, lw, _)) = label_positions.get(idx) {
                     let label_end = lx + lw;

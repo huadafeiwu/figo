@@ -489,9 +489,6 @@ mod tests {
 
         // The label should not appear below the source row (y >= 9).
         let below: String = out.lines().skip(9).collect::<Vec<_>>().join("\n");
-        assert!(
-            !below.contains("test"),
-            "label should not appear below source:\n{out}"
-        );
+        assert!(!below.contains("test"), "label should not appear below source:\n{out}");
     }
 }

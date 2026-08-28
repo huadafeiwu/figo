@@ -560,9 +560,6 @@ mod tests {
         c.repair_connector_junctions(LineStyle::Simple, Charset::Ascii);
         let rendered = c.render(false);
         let row = rendered.lines().nth(2).unwrap();
-        assert!(
-            !row.contains("++"),
-            "narrow corridor should not produce ++, got: {row:?}"
-        );
+        assert!(!row.contains("++"), "narrow corridor should not produce ++, got: {row:?}");
     }
 }
