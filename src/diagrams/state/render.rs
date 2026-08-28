@@ -904,29 +904,30 @@ fn draw_external_transition(
         // Restore corridor `---` ONLY on the corridor row (effective_route_y),
         // and only when the label is embedded in the corridor (label covers
         // part of the `---` line and needs to be restored around it).
-        if embed_in_corridor {
-            if effective_route_y >= block_top && effective_route_y < block_top + num_lines {
-                let idx = effective_route_y - block_top;
-                if let Some(&(lx, lw, _)) = label_positions.get(idx) {
-                    let label_end = lx + lw;
-                    if lx > left_x {
-                        surface.put_horizontal(
-                            left_x,
-                            effective_route_y,
-                            lx - left_x,
-                            glyphs.horizontal,
-                            Layer::Connector,
-                        );
-                    }
-                    if label_end <= right_x {
-                        surface.put_horizontal(
-                            label_end,
-                            effective_route_y,
-                            right_x - label_end + 1,
-                            glyphs.horizontal,
-                            Layer::Connector,
-                        );
-                    }
+        if embed_in_corridor
+            && effective_route_y >= block_top
+            && effective_route_y < block_top + num_lines
+        {
+            let idx = effective_route_y - block_top;
+            if let Some(&(lx, lw, _)) = label_positions.get(idx) {
+                let label_end = lx + lw;
+                if lx > left_x {
+                    surface.put_horizontal(
+                        left_x,
+                        effective_route_y,
+                        lx - left_x,
+                        glyphs.horizontal,
+                        Layer::Connector,
+                    );
+                }
+                if label_end <= right_x {
+                    surface.put_horizontal(
+                        label_end,
+                        effective_route_y,
+                        right_x - label_end + 1,
+                        glyphs.horizontal,
+                        Layer::Connector,
+                    );
                 }
             }
         }
