@@ -20,6 +20,13 @@ fn glyph(ch: char) -> Option<&'static [&'static str]> {
     Some(STANDARD_FONT[(code - 32) as usize])
 }
 
+/// True when every character of `text` has a glyph in the bundled font
+/// (printable ASCII). Callers use this to fall back to plain-text
+/// rendering instead of silently dropping unsupported characters.
+pub fn can_render(text: &str) -> bool {
+    text.chars().all(|c| glyph(c).is_some())
+}
+
 /// Render text as a FIGlet banner using the standard font.
 /// Each line of input text produces a banner; multiple lines are separated by
 /// blank rows.
