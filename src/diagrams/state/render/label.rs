@@ -52,11 +52,10 @@ pub(super) fn draw_transition_label(
     // Same anchor build() sizes the canvas with (see TransGeom).
     let base_x = if row > 0 { geom.stacked_base_x } else { geom.base_x };
 
-    let block_top = if row == 0 {
-        route.effective_route_y.saturating_sub(num_lines / 2)
-    } else {
-        route.effective_route_y.saturating_sub(row * 3).saturating_sub(num_lines / 2)
-    };
+    // Height-aware stacking position: row 0 centers its block on the
+    // corridor row; higher rows sit above the block below (one blank row
+    // between), so sibling labels in the same gap never overlap.
+    let block_top = route.effective_route_y.saturating_sub(tcx.stack_offset);
 
     // Draw all label lines first.
     let mut label_positions: Vec<(usize, usize, usize)> = Vec::new();

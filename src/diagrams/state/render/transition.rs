@@ -14,8 +14,10 @@ use crate::diagrams::state::types::Transition;
 use crate::render::surface::Surface;
 use crate::render::widget::{PaintContext, Rect};
 use crate::style::{BorderStyle, Charset};
+use crate::text::wrap_label;
 
 use super::avoidance::reroute_leg_around_boxes;
+use super::gap_expansion::gap_label_heights;
 use super::label::{RouteGeometry, draw_transition_label};
 use super::label_rows::gap_key_of;
 use super::same_layer::draw_same_layer_transition;
@@ -44,6 +46,9 @@ pub(super) struct TransitionCtx<'a> {
     pub all_layouts: &'a [StateLayout],
     pub geom: &'a TransGeom,
     pub avoid_junction_cols: &'a [usize],
+    /// Distance from the corridor row up to the label block's top row
+    /// (see `stack_offset_for`).
+    pub stack_offset: usize,
 }
 
 /// Draw all transitions (self-loops, same-layer arrows, V-H-V routes).
@@ -73,6 +78,14 @@ pub(super) fn draw_transitions(stage: &mut DrawStage<'_>) {
         entry.push(geom.right_x);
     }
 
+    // Height-aware label stacking: labels sharing a gap whose x-ranges
+    // overlap occupy successive rows, and each row's block sits directly
+    // above the block below (one blank row between). Derived from the
+    // wrapped line counts — no fixed row stride — so a short block can
+    // never land inside a tall sibling block and overwrite its label.
+    let gap_heights =
+        gap_label_heights(stage.transitions, stage.layouts, stage.label_rows, stage.trans_geoms);
+
     for (idx, t) in stage.transitions.iter().enumerate() {
         let Some(from) = stage.id_to_layout.get(&t.from) else { continue };
         let Some(to) = stage.id_to_layout.get(&t.to) else { continue };
@@ -94,6 +107,15 @@ pub(super) fn draw_transitions(stage: &mut DrawStage<'_>) {
         avoid_cols.dedup();
 
         let row = stage.label_rows.get(&idx).copied().unwrap_or(0);
+        // The block's own height, wrapped at the same avail the label
+        // pass uses (single geometry source).
+        let own_lines = t
+            .label
+            .as_ref()
+            .map(|l| wrap_label(l, stage.trans_geoms[idx].avail).line_count)
+            .unwrap_or(1);
+        let stack_offset =
+            stack_offset_for(gap_heights.get(&gap_key_of(from.rect, to.rect)), row, own_lines);
         let tcx = TransitionCtx {
             ctx: stage.ctx,
             from: from.rect,
@@ -102,9 +124,26 @@ pub(super) fn draw_transitions(stage: &mut DrawStage<'_>) {
             all_layouts: stage.layouts,
             geom: &stage.trans_geoms[idx],
             avoid_junction_cols: &avoid_cols,
+            stack_offset,
         };
         draw_external_transition(stage.surface, &tcx, t.label.as_deref(), row);
     }
+}
+
+/// Distance from the corridor row up to a label block's top row. Row 0
+/// centers its own block on the corridor row; row r sits above the
+/// block below it, one blank row between blocks:
+/// `offset(r) = h(0)/2 + Σ_{j=1..r} h(j)`.
+fn stack_offset_for(heights: Option<&Vec<usize>>, row: usize, own_lines: usize) -> usize {
+    if row == 0 {
+        return own_lines / 2;
+    }
+    let Some(hs) = heights else { return own_lines / 2 + row };
+    let mut off = hs.first().copied().unwrap_or(0) / 2;
+    for j in 1..=row {
+        off += hs.get(j).copied().unwrap_or(0);
+    }
+    off
 }
 
 /// Draw a single (non-self-loop) transition: same-layer horizontal arrow

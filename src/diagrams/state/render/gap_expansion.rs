@@ -4,59 +4,73 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::diagrams::state::layout::{LayoutParams, StateLayout};
+use crate::diagrams::state::render::label_rows::gap_key_of;
+use crate::diagrams::state::sugiyama::TransGeom;
 use crate::diagrams::state::types::Transition;
 use crate::text::wrap_label;
 
-/// Compute how many extra rows each vertical gap needs to fit its labels.
-/// Returns a map from gap key to extra rows needed.
-pub(super) fn compute_gap_expansion(
+/// Per-gap wrapped label heights: for each vertical gap, the tallest
+/// label block on each row (rows are the x-overlap stacking groups from
+/// `compute_label_rows`). Line counts come from the transition geoms'
+/// `avail` — the same wrap width the draw pass uses, so the vertical
+/// space reserved here always matches what actually gets drawn.
+pub(super) fn gap_label_heights(
     transitions: &[Transition],
     layouts: &[StateLayout],
     label_rows: &HashMap<usize, usize>,
-) -> HashMap<(usize, usize), usize> {
+    trans_geoms: &[TransGeom],
+) -> HashMap<(usize, usize), Vec<usize>> {
     let id_to_layout: HashMap<&str, &StateLayout> =
         layouts.iter().map(|l| (l.id.as_str(), l)).collect();
 
-    // Track max (row + num_lines) per gap — the vertical space needed is
-    // determined by how many rows of multi-line labels stack up.
-    let mut gap_max_extent: HashMap<(usize, usize), usize> = HashMap::new();
-
+    let mut gaps: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
     for (idx, t) in transitions.iter().enumerate() {
         if t.from == t.to {
             continue;
         }
         let Some(from) = id_to_layout.get(t.from.as_str()) else { continue };
         let Some(to) = id_to_layout.get(t.to.as_str()) else { continue };
+        let Some(label) = &t.label else { continue };
         let row = label_rows.get(&idx).copied().unwrap_or(0);
-        let from_cx = from.rect.x + from.rect.w / 2;
-        let to_cx = to.rect.x + to.rect.w / 2;
-        let gap_key = if from.rect.y < to.rect.y {
-            (from.rect.y, to.rect.y)
-        } else {
-            (to.rect.y, from.rect.y)
-        };
-
-        // Estimate the label's line count for wrapping.
-        let num_lines = if let Some(text) = &t.label {
-            let corridor_w = if from_cx != to_cx { from_cx.abs_diff(to_cx) + 1 } else { 80 };
-            let avail = corridor_w.max(10);
-            wrap_label(text, avail).line_count
-        } else {
-            1
-        };
-
-        // The vertical extent needed is row * 3 (spacing between rows) +
-        // num_lines (the label block itself).
-        let extent = row * 3 + num_lines;
-        gap_max_extent.entry(gap_key).and_modify(|r| *r = (*r).max(extent)).or_insert(extent);
+        let n = wrap_label(label, trans_geoms[idx].avail).line_count;
+        let heights = gaps.entry(gap_key_of(from.rect, to.rect)).or_default();
+        if heights.len() <= row {
+            heights.resize(row + 1, 0);
+        }
+        heights[row] = heights[row].max(n);
     }
+    gaps
+}
 
-    // Extra rows needed: the extent minus what's already available (1 row
-    // for the corridor itself).
+/// Compute how many extra rows each vertical gap needs to fit its label
+/// stack: every row's block plus one blank separator row between rows,
+/// plus the corridor row, minus the rows the layout already provides
+/// between the two boxes.
+pub(super) fn compute_gap_expansion(
+    transitions: &[Transition],
+    layouts: &[StateLayout],
+    label_rows: &HashMap<usize, usize>,
+    trans_geoms: &[TransGeom],
+) -> HashMap<(usize, usize), usize> {
+    let heights = gap_label_heights(transitions, layouts, label_rows, trans_geoms);
+
     let mut expansion = HashMap::new();
-    for (key, extent) in gap_max_extent {
-        if extent > 1 {
-            expansion.insert(key, extent * 3);
+    for ((upper_y, lower_y), hs) in heights {
+        let stack_rows: usize = hs.iter().sum::<usize>() + hs.len().saturating_sub(1);
+        let needed = stack_rows + 1; // + the corridor row itself
+        // Rows the layout already leaves between the two layers: the
+        // gap runs from the deepest box on the upper layer down to the
+        // lower layer's top.
+        let upper_bottom =
+            layouts.iter().filter(|l| l.rect.y == upper_y).map(|l| l.rect.bottom()).max();
+        let lower_top = layouts.iter().find(|l| l.rect.y == lower_y).map(|l| l.rect.y);
+        let available = match (upper_bottom, lower_top) {
+            (Some(ub), Some(lt)) => lt.saturating_sub(ub),
+            _ => 0,
+        };
+        let extra = needed.saturating_sub(available);
+        if extra > 0 {
+            expansion.insert((upper_y, lower_y), extra);
         }
     }
     expansion

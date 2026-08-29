@@ -109,10 +109,24 @@ impl<'a> StateDiagram<'a> {
         // inside layout_states, so recenter and expand_corridors are no
         // longer needed — column gaps already account for label widths.
 
+        // --- Single source of truth: compute all transition geometry once,
+        // BEFORE the vertical gap expansion. Every TransGeom field derives
+        // from x coordinates or RELATIVE y positions, which the expansion
+        // (a uniform downward shift per layer) cannot change — and the
+        // expansion needs these same avail values for its line-count
+        // estimates, so both sides read one source.
+        // layout_states returns declaration order, which
+        // compute_trans_geoms indexes against.
+        let id_to_idx: HashMap<&str, usize> =
+            self.states.iter().enumerate().map(|(i, s)| (s.id.as_str(), i)).collect();
+        let trans_geoms =
+            sugiyama::compute_trans_geoms(&layouts, &self.transitions, &id_to_idx, self.width);
+
         let label_rows = compute_label_rows(&self.transitions, &layouts);
 
         // Compute per-gap max row and expand gaps accordingly.
-        let gap_extra = compute_gap_expansion(&self.transitions, &layouts, &label_rows);
+        let gap_extra =
+            compute_gap_expansion(&self.transitions, &layouts, &label_rows, &trans_geoms);
         apply_gap_expansion(&mut layouts, &gap_extra, &params);
 
         // Shift states down for top margin (room for labels above topmost state).
@@ -123,15 +137,9 @@ impl<'a> StateDiagram<'a> {
 
         let id_to_layout = build_id_map(&layouts);
 
-        // --- Single source of truth: compute all transition geometry once ---
-        // Re-sort layouts to declaration order so that layouts[i] == states[i].
-        // apply_gap_expansion sorts by y, breaking the declaration order
-        // established by layout_states.
-        let id_to_idx: HashMap<&str, usize> =
-            self.states.iter().enumerate().map(|(i, s)| (s.id.as_str(), i)).collect();
+        // apply_gap_expansion sorts by y; restore declaration order so
+        // layouts[i] == states[i]. The geoms above are unaffected.
         layouts.sort_by_key(|l| id_to_idx[l.id.as_str()]);
-        let trans_geoms =
-            sugiyama::compute_trans_geoms(&layouts, &self.transitions, &id_to_idx, self.width);
 
         let mut total_w = compute_canvas_width(&layouts, &params).max(self.width);
 
