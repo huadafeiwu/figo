@@ -147,10 +147,13 @@ impl<'a> Table<'a> {
             }
         }
 
+        // The table's own column layout is a structural minimum: when the
+        // user width is too narrow for borders + padding + one column of
+        // content, the canvas grows to that minimum instead of clipping
+        // whole columns past the edge. (In the normal fit/surplus paths
+        // display_width already stays within the user width.)
         let display_width: usize =
             col_widths.iter().sum::<usize>() + pad_per_col * col_count + col_count + 1;
-        // Never exceed the user-specified width.
-        let display_width = display_width.min(self.width);
 
         let all_rows = self.collect_rows(col_count);
         let glyphs = self.border.glyphs(self.charset);
@@ -421,5 +424,22 @@ mod tests {
     fn snapshot_empty_table() {
         let out = Table::new(30, Charset::Ascii).build().unwrap();
         insta::assert_snapshot!(out);
+    }
+
+    #[test]
+    fn test_narrow_width_keeps_all_columns() {
+        // Regression: when the user width was narrower than the table's
+        // structural minimum (borders + padding + one column of content),
+        // the canvas used to be clipped to the user width and whole
+        // columns silently disappeared. The canvas now grows to the
+        // structural minimum.
+        let out = Table::new(6, Charset::Ascii)
+            .headers(&["A", "B", "C", "D"])
+            .rows(&[vec!["1", "2", "3", "4"]])
+            .build()
+            .unwrap();
+        for ch in ["A", "B", "C", "D", "1", "2", "3", "4"] {
+            assert!(out.contains(ch), "column content '{ch}' lost:\n{out}");
+        }
     }
 }
