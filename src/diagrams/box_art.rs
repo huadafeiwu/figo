@@ -10,6 +10,17 @@ use crate::error::{FigoError, Result};
 use crate::style::{Alignment, BorderStyle, Charset, HAlign, Padding, VAlign};
 use crate::text::{align_horizontal, word_wrap, wrap_label};
 
+/// Title inset in the border row: after the border corner and one dash
+/// cell.
+const TITLE_START: usize = 2;
+
+/// Padding on each side of the title text inside its border-row slot.
+const TITLE_PAD: usize = 1;
+
+/// Minimum width at which a title fits: inset + both pads + the wrap
+/// minimum (2 columns) + the right border column.
+const MIN_TITLED_WIDTH: usize = TITLE_START + 2 * TITLE_PAD + 2 + 1;
+
 /// Draw a bordered box with optional title and content.
 ///
 /// This is the simple free-function API. For full configuration use `BoxArt`.
@@ -103,6 +114,13 @@ impl<'a> BoxArt<'a> {
         if inner_width == 0 {
             return Err(FigoError::InvalidDimensions("width too small for padding".into()));
         }
+        let titled = self.title.is_some_and(|t| !t.is_empty());
+        if titled && self.width < MIN_TITLED_WIDTH {
+            return Err(FigoError::InvalidDimensions(format!(
+                "width must be at least {MIN_TITLED_WIDTH} for a title, got {}",
+                self.width
+            )));
+        }
 
         // Wrap the content text
         let content_lines: Vec<String> = match self.content {
@@ -113,12 +131,15 @@ impl<'a> BoxArt<'a> {
         // Calculate height
         let content_height = content_lines.len();
         // Wrap title to available width (no truncation). Extra title lines
-        // add to the box height so no characters are lost.
-        let title_lines: Vec<String> = match self.title {
-            Some(t) if !t.is_empty() && self.width > 4 => {
-                wrap_label(t, self.width.saturating_sub(4)).lines
-            }
-            _ => Vec::new(),
+        // add to the box height so no characters are lost. A title line's
+        // footprint in the border row is the inset plus one pad on each
+        // side of the text, and must stop before the right border column
+        // — derived from the same constants the draw pass uses.
+        let title_avail = self.width.saturating_sub(TITLE_START + 2 * TITLE_PAD + 1);
+        let title_lines: Vec<String> = if titled {
+            wrap_label(self.title.unwrap_or_default(), title_avail).lines
+        } else {
+            Vec::new()
         };
         let title_extra = title_lines.len().saturating_sub(1);
         let inner_height = self.padding.vertical * 2 + content_height + title_extra;
@@ -132,7 +153,7 @@ impl<'a> BoxArt<'a> {
         // Draw title: first line embedded in the top border, subsequent
         // lines on the rows immediately below the border.
         if !title_lines.is_empty() {
-            let start = 2;
+            let start = TITLE_START;
             // First line in the border row (row 0).
             canvas.put_str(start, 0, &format!(" {} ", title_lines[0]));
             // Extra title lines just below the border.
@@ -212,6 +233,27 @@ mod tests {
         .unwrap();
         // Should produce more than just the border lines (3+ lines)
         assert!(out.lines().count() > 3);
+    }
+
+    #[test]
+    fn test_long_title_keeps_right_border() {
+        // Regression: the title wrap width ignored the border-row slot's
+        // real footprint (inset + both padding spaces + the right border
+        // column), so a wrapped title line overran the right border and
+        // ate the border glyphs.
+        let long_title: String = "t".repeat(80);
+        let out = draw_box(Some(&long_title), Some("x"), 40, Charset::Ascii, BorderStyle::Single)
+            .unwrap();
+        assert_eq!(out.matches('t').count(), 80, "title chars lost:\n{out}");
+        // Every row must still end in a border glyph: the top border row
+        // (title first line) in `+`, interior title lines in `|`.
+        for (i, line) in out.lines().enumerate() {
+            let trimmed = line.trim_end();
+            assert!(
+                trimmed.ends_with('+') || trimmed.ends_with('|'),
+                "row {i} right border eaten by title:\n{out}"
+            );
+        }
     }
 
     #[test]
