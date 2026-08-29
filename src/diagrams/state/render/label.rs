@@ -5,6 +5,12 @@
 //! the corridor when embedded, shifts off sibling junction columns and
 //! box overlaps, then restores the corridor `---` and the vertical leg
 //! `|` around the block.
+//!
+//! Aligned edges that share their gap with corridor siblings take a
+//! different anchor: their default mid-route position lands exactly on
+//! the sibling corridor row (the fork), so the block moves to the
+//! exclusive leg segment between the fork and the target box, centered
+//! within it — see `own_leg_placement`.
 
 use unicode_width::UnicodeWidthStr;
 
@@ -30,6 +36,14 @@ pub(super) struct RouteGeometry {
     pub corridor_right: usize,
 }
 
+/// Where and how a label block is laid out: the wrapped lines, the
+/// column the block centers on, and the top row of the block.
+struct LabelBlock {
+    lines: Vec<String>,
+    center_x: usize,
+    block_top: usize,
+}
+
 /// Draw a transition's label block and restore the corridor `---` plus
 /// the vertical leg `|` around it.
 pub(super) fn draw_transition_label(
@@ -45,17 +59,21 @@ pub(super) fn draw_transition_label(
     let embed_in_corridor = geom.embed;
     let avail = geom.avail;
 
-    let wrapped = wrap_label(text, avail);
-    let lines = &wrapped.lines;
-    let num_lines = wrapped.line_count;
+    // An aligned edge sharing its gap with corridor siblings rides the
+    // exclusive leg segment below/above the fork instead of the default
+    // mid-route position (which coincides with the sibling corridor row
+    // and makes branch attribution ambiguous).
+    let rides_own_leg = corridor_w == 0 && !tcx.avoid_junction_cols.is_empty();
 
-    // Same anchor build() sizes the canvas with (see TransGeom).
-    let base_x = if row > 0 { geom.stacked_base_x } else { geom.base_x };
-
-    // Height-aware stacking position: row 0 centers its block on the
-    // corridor row; higher rows sit above the block below (one blank row
-    // between), so sibling labels in the same gap never overlap.
-    let block_top = route.effective_route_y.saturating_sub(tcx.stack_offset);
+    let block = if rides_own_leg {
+        own_leg_placement(tcx, text, route)
+    } else {
+        default_placement(tcx, text, row, route, avail)
+    };
+    let lines = &block.lines;
+    let num_lines = lines.len();
+    let base_x = block.center_x;
+    let block_top = block.block_top;
 
     // Draw all label lines first.
     let mut label_positions: Vec<(usize, usize, usize)> = Vec::new();
@@ -142,6 +160,115 @@ pub(super) fn draw_transition_label(
         let vcol = if route.forward { route.from_leg_cx } else { route.to_leg_cx };
         for ly in (block_top + num_lines)..=route.effective_route_y {
             surface.put_layered(vcol, ly, glyphs.vertical, Layer::Connector);
+        }
+    }
+}
+
+/// Default placement: wrap at the geom's `avail`, center on the geom
+/// anchor column, and stack above the corridor row by `stack_offset`.
+fn default_placement(
+    tcx: &TransitionCtx<'_>,
+    text: &str,
+    row: usize,
+    route: &RouteGeometry,
+    avail: usize,
+) -> LabelBlock {
+    let wrapped = wrap_label(text, avail);
+    let center_x = if row > 0 { tcx.geom.stacked_base_x } else { tcx.geom.base_x };
+    let block_top = route.effective_route_y.saturating_sub(tcx.stack_offset);
+    LabelBlock { lines: wrapped.lines, center_x, block_top }
+}
+
+/// Own-leg placement for an aligned edge with corridor siblings: the
+/// block rides the leg segment that belongs exclusively to this
+/// transition (between the corridor row and the target box), centered
+/// within it. All values are measured from the route geometry — no
+/// fixed offsets.
+fn own_leg_placement(tcx: &TransitionCtx<'_>, text: &str, route: &RouteGeometry) -> LabelBlock {
+    let ride_col = route.to_leg_cx;
+    let (wrap_w, center_x) =
+        riding_placement_cols(tcx.avoid_junction_cols, ride_col, tcx.canvas_width, tcx.geom.avail);
+
+    let wrapped = wrap_label(text, wrap_w);
+
+    // Rows the gap's row-0 label block overhangs the corridor row
+    // (odd-height blocks straddle it): the exclusive segment starts
+    // below that dip for forward edges, ends above the overhang for
+    // upward ones, so the riding block never lands on the sibling's
+    // straddling rows.
+    let skip_below = tcx.gap_row0_lines.div_ceil(2).saturating_sub(1);
+    let skip_above = tcx.gap_row0_lines / 2;
+
+    // The exclusive leg segment between the corridor row and the target
+    // box, exclusive of both; the block centers within it. When the
+    // segment is tight the block fills it from the segment start.
+    let (seg_start, seg_len) = if route.forward {
+        (
+            route.effective_route_y + 1 + skip_below,
+            route.to_anchor.saturating_sub(route.effective_route_y + 1 + skip_below),
+        )
+    } else {
+        (
+            route.to_anchor + 1,
+            route.effective_route_y.saturating_sub(route.to_anchor + 1).saturating_sub(skip_above),
+        )
+    };
+    let block_top = seg_start + seg_len.saturating_sub(wrapped.line_count) / 2;
+
+    LabelBlock { lines: wrapped.lines, center_x, block_top }
+}
+
+/// Wrap width and center column for a label riding its own leg at
+/// `ride_col`, shared by the placement here and by the gap-expansion
+/// height estimate (so reserved space always matches what gets drawn).
+///
+/// Ladder, every step measured: (1) ride the line — wrap to the widest
+/// block that stays clear of the nearest sibling leg column on either
+/// side (covering one's own leg is the riding convention); (2) when no
+/// riding width exists (sibling leg immediately adjacent), center in
+/// the wider free span beside the leg.
+pub(super) fn riding_placement_cols(
+    avoid_junction_cols: &[usize],
+    ride_col: usize,
+    canvas_width: usize,
+    avail: usize,
+) -> (usize, usize) {
+    // Distance to the nearest sibling leg column on either side.
+    let nearest = avoid_junction_cols
+        .iter()
+        .copied()
+        .filter(|&c| c != ride_col)
+        .map(|c| c.abs_diff(ride_col))
+        .min();
+
+    match nearest.map(|d| 2 * d - 1) {
+        // Room to ride the line: wrap to the widest width that keeps the
+        // block clear of both sibling legs (greedy wrap = fewest lines
+        // for that width).
+        Some(max_lw) if max_lw >= 2 => (avail.min(max_lw), ride_col),
+        // No riding width — fall back to the wider free span beside the
+        // leg, centered in that span (off the line, still clear of
+        // every sibling leg).
+        _ => {
+            let left_bound = avoid_junction_cols
+                .iter()
+                .copied()
+                .filter(|&c| c < ride_col)
+                .max()
+                .map_or(0, |c| c.saturating_add(1));
+            let right_bound = avoid_junction_cols
+                .iter()
+                .copied()
+                .filter(|&c| c > ride_col)
+                .min()
+                .unwrap_or(canvas_width);
+            let left_w = ride_col.saturating_sub(left_bound);
+            let right_w = right_bound.saturating_sub(ride_col + 1);
+            if left_w >= right_w {
+                (left_w, left_bound + left_w / 2)
+            } else {
+                (right_w, ride_col + 1 + right_w / 2)
+            }
         }
     }
 }

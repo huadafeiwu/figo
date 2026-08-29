@@ -141,8 +141,13 @@ impl<'a> StateDiagram<'a> {
         let label_rows = compute_label_rows(&self.transitions, &layouts);
 
         // Compute per-gap max row and expand gaps accordingly.
-        let gap_extra =
-            compute_gap_expansion(&self.transitions, &layouts, &label_rows, &trans_geoms);
+        let gap_extra = compute_gap_expansion(
+            &self.transitions,
+            &layouts,
+            &label_rows,
+            &trans_geoms,
+            self.label_budget,
+        );
         apply_gap_expansion(&mut layouts, &gap_extra, &params);
 
         // Shift states down for top margin (room for labels above topmost state).

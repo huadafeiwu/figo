@@ -6,8 +6,11 @@ expression: out
                               *────>|    TOP     |
                                     +------------+
                                            |
+                                           |
                                            right_branch_label
-                          left_branch_label+--------------------+
+                                           +--------------------+
+                                           |                    |
+                                   left_branch_label            |
                                            |                    |
                                     +------v-----+       +------v-----+
                                     |    LEFT    |       |   RIGHT    |

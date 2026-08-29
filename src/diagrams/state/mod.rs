@@ -455,11 +455,13 @@ mod tests {
 
     #[test]
     fn test_aligned_label_avoids_sibling_junction() {
-        // The left branch is an aligned edge (same column) whose row-0
-        // label used to sit centered on the shared leg column, covering
-        // the right branch's corridor start and its `+` junction (Label
-        // layer > Connector layer, the write was dropped). The label must
-        // shift beside the leg so both corridor junctions render.
+        // The left branch is an aligned edge (same column) whose label
+        // used to sit centered on the shared leg column at the fork,
+        // where it either covered the right branch's corridor junction
+        // (Label layer > Connector layer, the `+` was dropped) or abutted
+        // it so closely the label's branch attribution was ambiguous.
+        // The label now rides the exclusive leg segment below the fork,
+        // keeping the corridor row clean.
         let out = StateDiagram::new(100, Charset::Ascii)
             .add_state(StateNode {
                 id: "a".into(),
@@ -481,9 +483,143 @@ mod tests {
             .add_transition("a", "c", Some("right_branch_label"))
             .build()
             .unwrap();
-        let row = out.lines().find(|l| l.contains("left_branch_label")).expect("label missing");
-        let junctions = row.matches('+').count();
-        assert!(junctions >= 2, "both corridor junctions must render on the corridor row:\n{row}");
+        // The corridor row (the long `---` run) carries both junctions.
+        let corridor_row =
+            out.lines().max_by_key(|l| l.matches('-').count()).expect("corridor row with dashes");
+        assert!(
+            corridor_row.matches('+').count() >= 2,
+            "both corridor junctions must render on the corridor row:\n{corridor_row}"
+        );
+        // The riding label sits on its own leg below the fork, clear of
+        // the corridor row and both junction columns.
+        let label_row =
+            out.lines().find(|l| l.contains("left_branch_label")).expect("label missing");
+        assert!(
+            !label_row.contains('+') && label_row != corridor_row,
+            "riding label must stay clear of the fork:\n{label_row}"
+        );
+        insta::assert_snapshot!(out);
+    }
+
+    #[test]
+    fn test_riding_label_rides_leg_with_rails() {
+        // The riding convention: an aligned edge's label centers on its
+        // leg column below the fork with one `|` rail above and below
+        // the block (`| label |`), mirroring the corridor embed's
+        // `---label---` padding — and the fork junction stays a T, not a
+        // corner (the leg continues behind the label).
+        let out = StateDiagram::new(80, Charset::Unicode)
+            .add_state(StateNode {
+                id: "idle".into(),
+                label: "Idle".into(),
+                state_type: StateType::Simple,
+            })
+            .add_state(StateNode {
+                id: "a".into(),
+                label: "A".into(),
+                state_type: StateType::Simple,
+            })
+            .add_state(StateNode {
+                id: "b".into(),
+                label: "B".into(),
+                state_type: StateType::Simple,
+            })
+            .initial("idle")
+            .add_transition("idle", "a", Some("go_a"))
+            .add_transition("idle", "b", Some("go_b"))
+            .build()
+            .unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        let label_idx =
+            lines.iter().position(|l| l.contains("go_a")).expect("riding label missing");
+        // Rails above and below the riding block on its leg column.
+        let above = lines[label_idx - 1];
+        let below = lines[label_idx + 1];
+        assert!(above.contains('│'), "no `|` rail above the riding label:\n{above}");
+        assert!(below.contains('│'), "no `|` rail below the riding label:\n{below}");
+        // The fork junction is a T (leg continues through the label),
+        // never a corner glyph.
+        let junction_row = lines[label_idx - 2];
+        assert!(
+            junction_row.contains('├') || junction_row.contains('┼') || junction_row.contains('+'),
+            "fork junction must stay a T/cross, not a corner:\n{junction_row}"
+        );
+        insta::assert_snapshot!(out);
+    }
+
+    #[test]
+    fn test_riding_label_wraps_clear_of_sibling_leg() {
+        // Wrap ladder: when the riding label is wider than the measured
+        // distance to the sibling's descending leg allows, it wraps to
+        // that width (fewest lines) instead of overlapping the leg —
+        // never loses characters.
+        let long_label = "a_very_long_riding_branch_label_here";
+        let out = StateDiagram::new(60, Charset::Ascii)
+            .add_state(StateNode {
+                id: "top".into(),
+                label: "TOP".into(),
+                state_type: StateType::Simple,
+            })
+            .add_state(StateNode {
+                id: "mid".into(),
+                label: "MID".into(),
+                state_type: StateType::Simple,
+            })
+            .add_state(StateNode {
+                id: "side".into(),
+                label: "SIDE".into(),
+                state_type: StateType::Simple,
+            })
+            .initial("top")
+            .add_transition("top", "mid", Some(long_label))
+            .add_transition("top", "side", Some("sib"))
+            .build()
+            .unwrap();
+        // No characters lost: every char of the label appears somewhere
+        // (the wrap ladder may reflow, never drop).
+        for ch in long_label.chars() {
+            assert!(out.contains(ch), "label char '{ch}' missing:\n{out}");
+        }
+        // The sibling corridor label stays intact too.
+        assert!(out.contains("sib"), "sibling corridor label missing:\n{out}");
+        insta::assert_snapshot!(out);
+    }
+
+    #[test]
+    fn test_upward_riding_label() {
+        // Upward aligned edge (back-edge) with a corridor sibling in the
+        // same gap: the riding label centers on the leg segment ABOVE
+        // the fork (toward its target box).
+        let out = StateDiagram::new(80, Charset::Ascii)
+            .add_state(StateNode {
+                id: "top".into(),
+                label: "TOP".into(),
+                state_type: StateType::Simple,
+            })
+            .add_state(StateNode {
+                id: "mid".into(),
+                label: "MID".into(),
+                state_type: StateType::Simple,
+            })
+            .add_state(StateNode {
+                id: "side".into(),
+                label: "SIDE".into(),
+                state_type: StateType::Simple,
+            })
+            .initial("top")
+            .add_transition("top", "mid", None)
+            .add_transition("top", "side", Some("branch"))
+            .add_transition("mid", "top", Some("back_edge"))
+            .build()
+            .unwrap();
+        assert!(out.contains("back_edge"), "upward riding label missing:\n{out}");
+        // The label must not sit on the corridor row (the long `---` run).
+        let corridor_row =
+            out.lines().max_by_key(|l| l.matches('-').count()).expect("corridor row");
+        assert!(
+            !corridor_row.contains("back_edge"),
+            "upward riding label must not sit on the corridor row:\n{corridor_row}"
+        );
         insta::assert_snapshot!(out);
     }
 }
