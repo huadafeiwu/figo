@@ -146,6 +146,7 @@ pub fn layout_states(
         transitions,
         &id_to_idx,
         &sizes,
+        &layers,
         params.gap_x,
         canvas_width,
     );

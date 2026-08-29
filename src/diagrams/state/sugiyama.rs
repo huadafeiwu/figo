@@ -298,15 +298,19 @@ pub fn assign_coordinates(
 
 /// Phase 3b: Widen column gaps to fit transition labels.
 ///
-/// Uses **center distance** (not edge distance) to match the corridor_w
-/// calculation in `compute_trans_geoms`. The needed gap = label_w + 4
-/// (2 cells padding per side). Canvas width is expanded by `build()` to
-/// fit, so gaps are not capped here.
+/// The corridor is measured exactly the way `compute_single_geom` will
+/// measure it later: **center distance** for cross-layer (V-H-V) paths,
+/// and the **box-edge gap** for same-layer horizontal arrows (center
+/// distance overstates a same-layer corridor by both half-widths, which
+/// would stop widening too early and wrap labels needlessly). The needed
+/// gap = label_w + 4 (2 cells padding per side). Canvas width is expanded
+/// by `build()` to fit, so gaps are not capped here.
 pub fn compute_column_gaps(
     x: &mut [usize],
     transitions: &[Transition],
     id_to_idx: &HashMap<&str, usize>,
     sizes: &[Size],
+    layers: &[usize],
     min_gap: usize,
     _canvas_width: usize,
 ) {
@@ -340,8 +344,16 @@ pub fn compute_column_gaps(
         let from_cx = x[from_i] + sizes[from_i].w / 2;
         let to_cx = x[to_i] + sizes[to_i].w / 2;
 
-        // Use center distance (matches corridor_w in compute_trans_geoms).
-        let current_corridor = from_cx.abs_diff(to_cx) + 1;
+        // Measure the corridor the same way compute_single_geom does:
+        // box-edge gap for same-layer arrows, center distance for the
+        // cross-layer V-H-V path.
+        let same_layer = layers.get(from_i) == layers.get(to_i);
+        let current_corridor = if same_layer {
+            let (left_i, right_i) = if from_cx < to_cx { (from_i, to_i) } else { (to_i, from_i) };
+            x[right_i].saturating_sub(x[left_i] + sizes[left_i].w)
+        } else {
+            from_cx.abs_diff(to_cx) + 1
+        };
         if current_corridor >= needed {
             continue;
         }
@@ -565,5 +577,106 @@ mod tests {
         let g = compute_single_geom(&a, &b, true, Some("lbl"), 120);
         assert_eq!(g.stacked_base_x, g.base_x, "same-layer anchors on corridor midpoint");
         assert_eq!(g.base_x, (14 + 40) / 2);
+    }
+
+    #[test]
+    fn compute_column_gaps_same_layer_uses_edge_distance() {
+        // Same-layer boxes: a at x=0 (w=14), b at x=20 (w=14). The edge
+        // corridor is 6 but the center corridor is 21 — a 20-wide label
+        // needs 24. Widening must measure the edge corridor, otherwise it
+        // stops early at center distance and the label wraps needlessly.
+        let mut x = vec![0usize, 20];
+        let sizes = vec![Size::new(14, 3), Size::new(14, 3)];
+        let layers = vec![0usize, 0usize];
+        let transitions =
+            vec![Transition { from: "a".into(), to: "b".into(), label: Some("w".repeat(20)) }];
+        let mut id_map = HashMap::new();
+        id_map.insert("a", 0);
+        id_map.insert("b", 1);
+        compute_column_gaps(&mut x, &transitions, &id_map, &sizes, &layers, 6, 120);
+        let edge_corridor = x[1].saturating_sub(x[0] + sizes[0].w);
+        assert!(edge_corridor >= 24, "edge corridor {edge_corridor} must fit label+4 = 24");
+    }
+
+    #[test]
+    fn compute_column_gaps_cross_layer_uses_center_distance() {
+        // Cross-layer: the corridor is the center distance between the
+        // two legs. a at x=0 (cx=7), b at x=20 (cx=27) → 21 < needed 24,
+        // so the right node shifts until the centers are 24 apart.
+        let mut x = vec![0usize, 20];
+        let sizes = vec![Size::new(14, 3), Size::new(14, 3)];
+        let layers = vec![0usize, 1usize];
+        let transitions =
+            vec![Transition { from: "a".into(), to: "b".into(), label: Some("w".repeat(20)) }];
+        let mut id_map = HashMap::new();
+        id_map.insert("a", 0);
+        id_map.insert("b", 1);
+        compute_column_gaps(&mut x, &transitions, &id_map, &sizes, &layers, 6, 120);
+        let center_corridor = (x[0] + sizes[0].w / 2).abs_diff(x[1] + sizes[1].w / 2) + 1;
+        assert!(center_corridor >= 24, "center corridor {center_corridor} must fit label+4 = 24");
+    }
+
+    #[test]
+    fn layout_separates_transition_endpoints_into_layers() {
+        // The longest-path layering (back-edges excluded) always places a
+        // transition's endpoints in different layers: non-back edges force
+        // layer[to] >= layer[from] + 1, and back edges run between a DFS
+        // ancestor and descendant, which are also on different layers.
+        // This test pins that invariant across cycle shapes and DFS entry
+        // orders — if it ever fails, same-layer rendering becomes live.
+        use crate::diagrams::state::layout::{LayoutParams, StateLayout, layout_states};
+        use crate::diagrams::state::types::{StateNode, StateType};
+
+        let mk = |id: &str| StateNode {
+            id: id.into(),
+            label: id.to_ascii_uppercase(),
+            state_type: StateType::Simple,
+        };
+        let tr = |from: &str, to: &str, label: &str| Transition {
+            from: from.into(),
+            to: to.into(),
+            label: Some(label.into()),
+        };
+
+        let cases: Vec<(&str, Vec<StateNode>, Vec<Transition>)> = vec![
+            ("2-cycle", vec![mk("a"), mk("b")], vec![tr("a", "b", "x"), tr("b", "a", "y")]),
+            (
+                "2-cycle reversed declaration",
+                vec![mk("b"), mk("a")],
+                vec![tr("a", "b", "x"), tr("b", "a", "y")],
+            ),
+            (
+                "3-cycle",
+                vec![mk("a"), mk("b"), mk("c")],
+                vec![tr("a", "b", "x"), tr("b", "c", "y"), tr("c", "a", "z")],
+            ),
+            (
+                "2-cycle with tail",
+                vec![mk("a"), mk("b"), mk("c")],
+                vec![tr("a", "b", "x"), tr("b", "a", "y"), tr("b", "c", "z")],
+            ),
+            (
+                "fork into join",
+                vec![mk("a"), mk("b"), mk("c"), mk("d")],
+                vec![tr("a", "b", "x"), tr("a", "c", "y"), tr("b", "d", "z"), tr("c", "d", "w")],
+            ),
+            ("chain", vec![mk("a"), mk("b"), mk("c")], vec![tr("a", "b", "x"), tr("b", "c", "y")]),
+        ];
+
+        let params = LayoutParams::default();
+        for (name, states, transitions) in cases {
+            let layouts: Vec<StateLayout> =
+                layout_states(&states, &transitions, None, 120, &params);
+            let id_to_idx: HashMap<&str, usize> =
+                states.iter().enumerate().map(|(i, s)| (s.id.as_str(), i)).collect();
+            let geoms = compute_trans_geoms(&layouts, &transitions, &id_to_idx, 120);
+            for (i, g) in geoms.iter().enumerate() {
+                assert!(
+                    !g.same_layer,
+                    "{name}: transition {}→{} landed same-layer (from.y == to.y)",
+                    transitions[i].from, transitions[i].to
+                );
+            }
+        }
     }
 }
