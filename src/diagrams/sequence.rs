@@ -396,7 +396,13 @@ impl LaneLayout {
         let margin_cap = budget.saturating_sub(lane_width * n);
         let right_margin = label_margin.min(margin_cap);
 
-        let total_width = (lane_width * n + right_margin).max(width);
+        // Structural floor for a last-lane self label: even when the
+        // budget leaves no margin, the region right of the loop keeps
+        // the wrap minimum (2 columns) so no line can spill past the
+        // canvas edge and get dropped.
+        let last_lifeline = (n - 1) * lane_width + LANE_GAP_HALF + (lane_width - LANE_GAP - 1) / 2;
+        let last_self_floor = if label_margin > 0 { last_lifeline + SELF_LOOP_COLS + 2 } else { 0 };
+        let total_width = (lane_width * n + right_margin).max(width).max(last_self_floor);
         LaneLayout { n, lane_width, total_width }
     }
 
@@ -652,6 +658,24 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(out.matches('x').count(), 200, "label chars lost:\n{out}");
+    }
+
+    #[test]
+    fn test_last_lane_self_label_never_spills_past_canvas() {
+        // Regression (found in review): with a very narrow width the
+        // last lane's self-label region can shrink to one column; the
+        // wrap minimum (2) would then push a line's last character past
+        // the canvas edge, where put_layered silently drops it. The
+        // canvas structurally reserves loop columns + wrap minimum for
+        // a last-lane self label, so every character survives.
+        let label = "ab";
+        let out = SequenceDiagram::new(18, Charset::Ascii)
+            .add_participant("P1")
+            .add_participant("P2")
+            .add_message("P2", "P2", label)
+            .build()
+            .unwrap();
+        assert!(out.contains("ab"), "label lost:\n{out}");
     }
 
     /// Asserts the arrowhead glyph in the first message's arrow row is
