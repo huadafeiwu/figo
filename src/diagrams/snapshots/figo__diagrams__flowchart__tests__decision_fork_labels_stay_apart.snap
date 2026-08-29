@@ -1,0 +1,28 @@
+---
+source: src/diagrams/flowchart.rs
+expression: out
+---
+                              ^
+                             / \
+                            /   \
+                           /     \
+                          /Check? \
+                           \     /
+                            \   /
+                             \ /
+                              v
+                              |
+                        +-no--+-yes-+
+                        |     |     |
+                        v     |     v
+                     +----+   |  +----+
+                     | X  |   |  | Y  |
+                     +----+   |  +----+
+                        |     |     |
+                        +-----+-----+
+                         retry again
+                              |
+                              v
+                           +----+
+                           | Z  |
+                           +----+

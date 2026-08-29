@@ -16,6 +16,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::canvas::Layer;
 use crate::diagrams::state::render::transition::TransitionCtx;
+use crate::layout::riding_placement_cols;
 use crate::render::surface::Surface;
 use crate::style::{BorderStyle, Charset};
 use crate::text::wrap_label;
@@ -216,59 +217,4 @@ fn own_leg_placement(tcx: &TransitionCtx<'_>, text: &str, route: &RouteGeometry)
     let block_top = seg_start + seg_len.saturating_sub(wrapped.line_count) / 2;
 
     LabelBlock { lines: wrapped.lines, center_x, block_top }
-}
-
-/// Wrap width and center column for a label riding its own leg at
-/// `ride_col`, shared by the placement here and by the gap-expansion
-/// height estimate (so reserved space always matches what gets drawn).
-///
-/// Ladder, every step measured: (1) ride the line — wrap to the widest
-/// block that stays clear of the nearest sibling leg column on either
-/// side (covering one's own leg is the riding convention); (2) when no
-/// riding width exists (sibling leg immediately adjacent), center in
-/// the wider free span beside the leg.
-pub(super) fn riding_placement_cols(
-    avoid_junction_cols: &[usize],
-    ride_col: usize,
-    canvas_width: usize,
-    avail: usize,
-) -> (usize, usize) {
-    // Distance to the nearest sibling leg column on either side.
-    let nearest = avoid_junction_cols
-        .iter()
-        .copied()
-        .filter(|&c| c != ride_col)
-        .map(|c| c.abs_diff(ride_col))
-        .min();
-
-    match nearest.map(|d| 2 * d - 1) {
-        // Room to ride the line: wrap to the widest width that keeps the
-        // block clear of both sibling legs (greedy wrap = fewest lines
-        // for that width).
-        Some(max_lw) if max_lw >= 2 => (avail.min(max_lw), ride_col),
-        // No riding width — fall back to the wider free span beside the
-        // leg, centered in that span (off the line, still clear of
-        // every sibling leg).
-        _ => {
-            let left_bound = avoid_junction_cols
-                .iter()
-                .copied()
-                .filter(|&c| c < ride_col)
-                .max()
-                .map_or(0, |c| c.saturating_add(1));
-            let right_bound = avoid_junction_cols
-                .iter()
-                .copied()
-                .filter(|&c| c > ride_col)
-                .min()
-                .unwrap_or(canvas_width);
-            let left_w = ride_col.saturating_sub(left_bound);
-            let right_w = right_bound.saturating_sub(ride_col + 1);
-            if left_w >= right_w {
-                (left_w, left_bound + left_w / 2)
-            } else {
-                (right_w, ride_col + 1 + right_w / 2)
-            }
-        }
-    }
 }

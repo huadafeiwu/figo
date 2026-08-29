@@ -4,10 +4,10 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::diagrams::state::layout::{LayoutParams, StateLayout};
-use crate::diagrams::state::render::label::riding_placement_cols;
 use crate::diagrams::state::render::label_rows::gap_key_of;
 use crate::diagrams::state::sugiyama::TransGeom;
 use crate::diagrams::state::types::Transition;
+use crate::layout::riding_placement_cols;
 use crate::text::wrap_label;
 
 /// Per-gap label space budget: stacked block heights above the corridor

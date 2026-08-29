@@ -101,6 +101,9 @@ pub struct Connector {
     /// User-specified canvas width — the hard upper limit for label wrapping.
     /// When `None`, falls back to the canvas width at draw time.
     pub user_width: Option<usize>,
+    /// Riding directive for vertical-connector labels colliding with
+    /// same-source corridor siblings (see [`RidingLabel`]).
+    pub riding: Option<RidingLabel>,
 }
 
 /// Wrap width for a label centered on a horizontal corridor of `len`
@@ -115,6 +118,74 @@ pub fn corridor_label_avail(len: usize, w_limit: usize) -> usize {
 /// bounded by the canvas width.
 pub fn beside_line_label_avail(sx: usize, w_limit: usize) -> usize {
     w_limit.saturating_sub(sx + 2).max(2).min(w_limit)
+}
+
+/// Wrap width and center column for a label riding its own line at
+/// `ride_col`, shared by the state and flowchart label placements (and
+/// their row-reservation estimates) so both sides read one source.
+///
+/// Ladder, every step measured: (1) ride the line — wrap to the widest
+/// block that stays clear of the nearest sibling leg column on either
+/// side (covering one's own line is the riding convention); (2) when no
+/// riding width exists (a sibling leg is immediately adjacent), center
+/// in the wider free span beside the line.
+pub fn riding_placement_cols(
+    avoid_cols: &[usize],
+    ride_col: usize,
+    canvas_width: usize,
+    avail: usize,
+) -> (usize, usize) {
+    // Distance to the nearest sibling leg column on either side.
+    let nearest =
+        avoid_cols.iter().copied().filter(|&c| c != ride_col).map(|c| c.abs_diff(ride_col)).min();
+
+    match nearest.map(|d| 2 * d - 1) {
+        // Room to ride the line: wrap to the widest width that keeps the
+        // block clear of both sibling legs (greedy wrap = fewest lines
+        // for that width).
+        Some(max_lw) if max_lw >= 2 => (avail.min(max_lw), ride_col),
+        // No riding width — fall back to the wider free span beside the
+        // line, centered in that span (off the line, still clear of
+        // every sibling leg).
+        _ => {
+            let left_bound = avoid_cols
+                .iter()
+                .copied()
+                .filter(|&c| c < ride_col)
+                .max()
+                .map_or(0, |c| c.saturating_add(1));
+            let right_bound =
+                avoid_cols.iter().copied().filter(|&c| c > ride_col).min().unwrap_or(canvas_width);
+            let left_w = ride_col.saturating_sub(left_bound);
+            let right_w = right_bound.saturating_sub(ride_col + 1);
+            if left_w >= right_w {
+                (left_w, left_bound + left_w / 2)
+            } else {
+                (right_w, ride_col + 1 + right_w / 2)
+            }
+        }
+    }
+}
+
+/// Top row of a corridor label block: centered on the corridor row `y`
+/// but kept inside `[sy, ty - n + 1]` so the block never starts above
+/// the source anchor or below the target. Shared by the draw pass and
+/// the fork-riding row estimates.
+pub fn corridor_label_block_top(y: usize, n: usize, sy: usize, ty: usize) -> usize {
+    y.saturating_sub(n / 2).min(ty.saturating_sub(n.saturating_sub(1))).max(sy)
+}
+
+/// Riding directive for a purely vertical connector: the default label
+/// anchor (the row just below the source) coincides with the corridor
+/// row of same-source corridor siblings, so the block instead rides an
+/// exclusive stretch of the leg. The caller — which sees every node's
+/// geometry — measures the wrap width (sibling-aware ladder, see
+/// [`riding_placement_cols`]) and picks the stretch clear of sibling
+/// label blocks and intermediate boxes, nearest the target box.
+#[derive(Clone, Copy, Debug)]
+pub struct RidingLabel {
+    pub wrap_w: usize,
+    pub block_top: usize,
 }
 
 impl Connector {
@@ -143,12 +214,20 @@ impl Connector {
             arrow_head: head,
             label: None,
             user_width: None,
+            riding: None,
         }
     }
 
     /// Set the user-specified canvas width as a hard limit for label wrapping.
     pub fn with_user_width(mut self, width: usize) -> Self {
         self.user_width = Some(width);
+        self
+    }
+
+    /// Set the riding directive for this connector's label (see
+    /// [`RidingLabel`]).
+    pub fn with_riding_label(mut self, riding: RidingLabel) -> Self {
+        self.riding = Some(riding);
         self
     }
 
@@ -325,13 +404,24 @@ impl Connector {
             // Purely vertical: label embedded IN the vertical line. The
             // label text covers `|` on its rows; `|` is restored above and
             // below the label block so the connector stays continuous.
-            let avail = beside_line_label_avail(sx, w_limit);
+            let downward = sy <= ty;
+            let (avail, block_top) = match self.riding {
+                // Same-source corridor siblings place their corridor row
+                // at the default anchor (sy+1): the caller (which sees
+                // every node's geometry) has already picked the exclusive
+                // leg-segment stretch — clear of sibling blocks and
+                // intermediate boxes — and the top row to draw at.
+                Some(riding) => (riding.wrap_w, riding.block_top),
+                None => {
+                    let avail = beside_line_label_avail(sx, w_limit);
+                    let n = wrap_label(label, avail).line_count;
+                    let top = if downward { sy + 1 } else { sy.saturating_sub(n) };
+                    (avail, top)
+                }
+            };
             let wrapped = wrap_label(label, avail);
             let lines = &wrapped.lines;
             let n = wrapped.line_count;
-
-            let downward = sy <= ty;
-            let block_top = if downward { sy + 1 } else { sy.saturating_sub(n) };
 
             // Draw label lines centered on the vertical line column sx.
             for (i, line) in lines.iter().enumerate() {

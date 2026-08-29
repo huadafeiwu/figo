@@ -13,7 +13,10 @@ use crate::canvas::{Canvas, Layer};
 use crate::error::{FigoError, Result};
 use crate::layout::connector::Connector;
 use crate::layout::geom::{Anchor, Rect};
-use crate::layout::{beside_line_label_avail, corridor_label_avail, h_corridor_len};
+use crate::layout::{
+    RidingLabel, beside_line_label_avail, corridor_label_avail, corridor_label_block_top,
+    h_corridor_len, riding_placement_cols,
+};
 use crate::style::{BorderStyle, Charset, LineStyle};
 use crate::text::wrap_label;
 use unicode_width::UnicodeWidthStr;
@@ -313,6 +316,13 @@ impl Flowchart {
         // stride, and the drawn block then gets clamped into the corridor
         // — silently losing label lines.
         let mut max_label_lines_per_gap: HashMap<usize, usize> = HashMap::new();
+        // Fork-riding data per source node: a purely vertical connector
+        // anchors its label at the row just below the source — exactly
+        // where same-source corridor siblings place their corridor row —
+        // so its label must ride the exclusive leg segment below every
+        // sibling label block instead. Track each source's corridor
+        // siblings (far leg column + wrapped line count).
+        let mut source_corridor_sibs: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
         for conn in &self.connections {
             let (Some(&from_idx), Some(&to_idx)) =
                 (id_to_idx.get(conn.from.as_str()), id_to_idx.get(conn.to.as_str()))
@@ -324,7 +334,6 @@ impl Flowchart {
             if from_layer >= to_layer {
                 continue; // back-edge / same-layer: side route, no stride need
             }
-            let Some(label) = &conn.label else { continue };
             let from_cx = xs[from_idx] + dims[from_idx].0 / 2;
             let to_cx = xs[to_idx] + dims[to_idx].0 / 2;
             let avail = if from_cx != to_cx {
@@ -332,11 +341,56 @@ impl Flowchart {
             } else {
                 beside_line_label_avail(from_cx, self.width)
             };
-            let n = wrap_label(label, avail).line_count;
-            // The stride below a layer must fit every label block whose
-            // corridor leaves that layer.
-            let gap = from_layer;
-            max_label_lines_per_gap.entry(gap).and_modify(|v| *v = (*v).max(n)).or_insert(n);
+            let n = conn.label.as_ref().map(|l| wrap_label(l, avail).line_count).unwrap_or(0);
+            if from_cx != to_cx {
+                source_corridor_sibs.entry(conn.from.as_str()).or_default().push((to_cx, n));
+            }
+            if conn.label.is_some() {
+                // The stride below a layer must fit every label block whose
+                // corridor leaves that layer.
+                let gap = from_layer;
+                max_label_lines_per_gap.entry(gap).and_modify(|v| *v = (*v).max(n)).or_insert(n);
+            }
+        }
+
+        // Fork-riding stride demand: the riding label lives in the layer
+        // gap just above its target box (for skip-layer connectors the
+        // block lands below the transit layers). Same-gap forks also
+        // carry the sibling corridor label's spill below the corridor
+        // row. The wrap width is the same sibling-aware ladder the draw
+        // pass uses; one `|` rail rides on each side of the block.
+        let mut riding_stride_demand: HashMap<usize, usize> = HashMap::new();
+        for conn in &self.connections {
+            let Some(label) = &conn.label else { continue };
+            let (Some(&from_idx), Some(&to_idx)) =
+                (id_to_idx.get(conn.from.as_str()), id_to_idx.get(conn.to.as_str()))
+            else {
+                continue;
+            };
+            let from_layer = id_to_layer.get(&from_idx).copied().unwrap_or(0);
+            let to_layer = id_to_layer.get(&to_idx).copied().unwrap_or(0);
+            if from_layer >= to_layer {
+                continue;
+            }
+            let from_cx = xs[from_idx] + dims[from_idx].0 / 2;
+            let to_cx = xs[to_idx] + dims[to_idx].0 / 2;
+            if from_cx != to_cx {
+                continue; // corridor connector: no riding
+            }
+            let Some(sibs) = source_corridor_sibs.get(conn.from.as_str()) else { continue };
+            let spill = sibs.iter().map(|&(_, n)| n).max().unwrap_or(0).saturating_sub(2);
+            let far_cols: Vec<usize> = sibs.iter().map(|&(c, _)| c).collect();
+            let avail = beside_line_label_avail(from_cx, self.width);
+            let (wrap_w, _) = riding_placement_cols(&far_cols, from_cx, self.width, avail);
+            let n_ride = wrap_label(label, wrap_w).line_count;
+            let mut demand = n_ride + 4;
+            if to_layer == from_layer + 1 {
+                demand += spill; // the fork and the stretch share one gap
+            }
+            riding_stride_demand
+                .entry(to_layer - 1)
+                .and_modify(|v| *v = (*v).max(demand))
+                .or_insert(demand);
         }
 
         // Pass 3: y positions. The stride after each layer grows to fit
@@ -352,7 +406,13 @@ impl Flowchart {
                 });
             }
             let label_lines = max_label_lines_per_gap.get(&layer_i).copied().unwrap_or(0).max(1);
-            let stride = AUTO_STRIDE_ROWS.max(label_lines + 2);
+            let mut stride = AUTO_STRIDE_ROWS.max(label_lines + 2);
+            if let Some(&demand) = riding_stride_demand.get(&layer_i) {
+                // Fork-riding labels live below the sibling corridor
+                // block: fit its spill, one `|` rail on each side of the
+                // riding block, and the block itself.
+                stride = stride.max(demand);
+            }
             y += max_h + stride;
         }
 
@@ -378,6 +438,44 @@ impl Flowchart {
         // Phase 1 — node borders and labels.
         for pos in positions {
             self.draw_node(&mut canvas, pos);
+        }
+
+        // Fork-riding aggregation: a purely vertical forward connector
+        // (same center column as its target) anchors its label at the
+        // row just below the source — exactly where same-source corridor
+        // siblings place their corridor row (`natural_mid_y` = bottom +
+        // 1). The two label blocks then interleave on the same rows and
+        // characters are lost. Record each source's corridor siblings
+        // (far leg column, label block bottom row) so the vertical
+        // connector's label can ride the exclusive leg segment below
+        // every sibling block instead.
+        let mut fork_sibs: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
+        for conn in &self.connections {
+            let (Some(&from), Some(&to)) =
+                (pos_map.get(conn.from.as_str()), pos_map.get(conn.to.as_str()))
+            else {
+                continue;
+            };
+            if from.rect.y >= to.rect.y {
+                continue; // back-edge: side route, never meets the fork
+            }
+            let from_cx = from.rect.x + from.rect.w / 2;
+            let to_cx = to.rect.x + to.rect.w / 2;
+            if from_cx == to_cx {
+                continue; // vertical connector: the rider, not the sibling
+            }
+            let (sy, ty) = (from.rect.bottom(), to.rect.y);
+            // Corridor row and label block bottom, using the same
+            // formulas the sibling's own draw pass uses.
+            let block_bottom = match &conn.label {
+                Some(label) => {
+                    let avail = corridor_label_avail(h_corridor_len(from_cx, to_cx), self.width);
+                    let n = wrap_label(label, avail).line_count;
+                    corridor_label_block_top(sy + 1, n, sy, ty) + n - 1
+                }
+                None => sy + 1,
+            };
+            fork_sibs.entry(conn.from.as_str()).or_default().push((to_cx, block_bottom));
         }
 
         // Phase 2 — connectors.
@@ -407,6 +505,71 @@ impl Flowchart {
             .with_user_width(self.width);
             if let Some(label) = &conn.label {
                 connector.label = Some(label.clone());
+            }
+            // Fork riding for labeled vertical forward connectors with
+            // corridor siblings: measure the sibling-aware wrap width,
+            // then pick the leg stretch clear of sibling label blocks
+            // and intermediate boxes — preferring the stretch nearest
+            // the target box — and center the block within it.
+            if !is_back && conn.label.is_some() {
+                let from_cx = from.rect.x + from.rect.w / 2;
+                let to_cx = to.rect.x + to.rect.w / 2;
+                if from_cx == to_cx {
+                    if let Some(sibs) = fork_sibs.get(conn.from.as_str()) {
+                        let label = conn.label.as_deref().unwrap();
+                        let (sy, ty) = (from.rect.bottom(), to.rect.y);
+                        let below_row = sibs.iter().map(|&(_, bb)| bb + 1).max().unwrap_or(sy + 1);
+                        let far_cols: Vec<usize> = sibs.iter().map(|&(c, _)| c).collect();
+                        let avail = beside_line_label_avail(from_cx, self.width);
+                        let (wrap_w, _) =
+                            riding_placement_cols(&far_cols, from_cx, canvas.width(), avail);
+                        let n = wrap_label(label, wrap_w).line_count;
+                        // The block's widest line spans this column range
+                        // when centered on the leg.
+                        let lx = from_cx.saturating_sub(wrap_w / 2);
+                        let span = (lx, lx + wrap_w);
+                        // Intermediate boxes that overlap the span cut the
+                        // candidate rows [below_row, ty) into stretches.
+                        let mut blockers: Vec<(usize, usize)> = positions
+                            .iter()
+                            .map(|p| p.rect)
+                            .filter(|r| *r != from.rect && *r != to.rect)
+                            .filter(|r| {
+                                r.y < ty
+                                    && r.bottom() > below_row
+                                    && r.right() > span.0
+                                    && r.x < span.1
+                            })
+                            .map(|r| (r.y.max(below_row), r.bottom().min(ty)))
+                            .collect();
+                        blockers.sort_by_key(|&(lo, _)| lo);
+                        let mut stretches: Vec<(usize, usize)> = Vec::new();
+                        let mut start = below_row;
+                        for (b_lo, b_hi) in blockers {
+                            if b_lo > start {
+                                stretches.push((start, b_lo));
+                            }
+                            start = start.max(b_hi);
+                        }
+                        if ty > start {
+                            stretches.push((start, ty));
+                        }
+                        // Prefer the stretch nearest the target with room
+                        // for the block plus its `|` rails, then without
+                        // rails, then the widest anywhere.
+                        let chosen = stretches
+                            .iter()
+                            .rev()
+                            .find(|&&(lo, hi)| hi - lo >= n + 2)
+                            .or_else(|| stretches.iter().rev().find(|&&(lo, hi)| hi - lo >= n))
+                            .or_else(|| stretches.iter().max_by_key(|&&(lo, hi)| hi - lo));
+                        let block_top = match chosen {
+                            Some(&(lo, hi)) => lo + (hi - lo).saturating_sub(n) / 2,
+                            None => below_row, // degenerate: no clear stretch
+                        };
+                        connector = connector.with_riding_label(RidingLabel { wrap_w, block_top });
+                    }
+                }
             }
             if is_back {
                 let w = canvas.width();
@@ -606,6 +769,102 @@ mod tests {
         let out = fc.build().unwrap();
         // The "no" label must appear (side-route draws it by the corridor).
         assert!(out.contains("no"), "back-edge label 'no' missing:\n{out}");
+    }
+
+    #[test]
+    fn test_fork_riding_label_no_char_loss() {
+        // A purely vertical connector (A→C, same center column) shares
+        // its source's south anchor row with corridor siblings (A→B):
+        // the vertical label used to anchor exactly on the sibling
+        // corridor row (natural_mid_y = bottom + 1), interleaving with
+        // and overwriting the sibling label — characters were lost. The
+        // vertical label now rides an exclusive stretch of its leg
+        // (clear of sibling blocks and intermediate boxes): every
+        // character of both labels survives, on rows of their own.
+        let fc = Flowchart::new(60, Charset::Ascii)
+            .add_node(FlowNode {
+                id: "A".into(),
+                label: "A".into(),
+                shape: NodeShape::Rectangle,
+                position: None,
+            })
+            .add_node(FlowNode {
+                id: "X".into(),
+                label: "X".into(),
+                shape: NodeShape::Rectangle,
+                position: None,
+            })
+            .add_node(FlowNode {
+                id: "B".into(),
+                label: "B".into(),
+                shape: NodeShape::Rectangle,
+                position: None,
+            })
+            .add_node(FlowNode {
+                id: "C".into(),
+                label: "C".into(),
+                shape: NodeShape::Rectangle,
+                position: None,
+            })
+            .connect("A", "C", Some("AAAAAAAAAAAAAAAA"))
+            .connect("A", "B", Some("BBBBBBBBBBBBBB"))
+            .connect("A", "X", None)
+            .connect("X", "C", None);
+        let out = fc.build().unwrap();
+        // 16 label A's + the node label "A"; 14 label B's + node "B".
+        assert!(out.matches('A').count() >= 17, "riding label A chars lost:\n{out}");
+        assert!(out.matches('B').count() >= 15, "corridor label B chars lost:\n{out}");
+        // The riding label's rows never interleave with the sibling's.
+        for line in out.lines() {
+            if line.contains("AAAA") {
+                assert!(!line.contains('B'), "labels interleaved on one row:\n{line}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_decision_fork_labels_stay_apart() {
+        // The common decision-diamond fork: the aligned edge's label
+        // ("retry again") used to fuse with the two corridor labels on
+        // the fork row into an unreadable single row. It now rides its
+        // own leg stretch below the branch boxes, unsplit and separate.
+        let fc = Flowchart::new(60, Charset::Ascii)
+            .add_node(FlowNode {
+                id: "D".into(),
+                label: "Check?".into(),
+                shape: NodeShape::Diamond,
+                position: None,
+            })
+            .add_node(FlowNode {
+                id: "X".into(),
+                label: "X".into(),
+                shape: NodeShape::Rectangle,
+                position: None,
+            })
+            .add_node(FlowNode {
+                id: "Y".into(),
+                label: "Y".into(),
+                shape: NodeShape::Rectangle,
+                position: None,
+            })
+            .add_node(FlowNode {
+                id: "Z".into(),
+                label: "Z".into(),
+                shape: NodeShape::Rectangle,
+                position: None,
+            })
+            .connect("D", "Z", Some("retry again"))
+            .connect("D", "Y", Some("yes"))
+            .connect("D", "X", Some("no"))
+            .connect("X", "Z", None)
+            .connect("Y", "Z", None);
+        let out = fc.build().unwrap();
+        let row = out.lines().find(|l| l.contains("retry again")).expect("label missing");
+        assert!(
+            !row.contains("yes") && !row.contains("no"),
+            "aligned label fused with corridor labels:\n{row}"
+        );
+        insta::assert_snapshot!(out);
     }
 
     /// Regression for z-layer protection: a connector's vertical leg
