@@ -124,6 +124,14 @@ pub fn straight_vertical(x: usize, sy: usize, ty: usize) -> Vec<Segment> {
     }
 }
 
+/// Length of the horizontal corridor between anchor columns `sx` and
+/// `tx` (both legs inclusive). The single source for this quantity —
+/// path building and label-width estimation both call it, so the two
+/// can never drift apart.
+pub fn h_corridor_len(sx: usize, tx: usize) -> usize {
+    sx.abs_diff(tx) + 1
+}
+
 /// Build a 3-segment V-H-V path through the horizontal corridor at
 /// `mid_y`.
 pub fn build_three_segment(
@@ -140,9 +148,9 @@ pub fn build_three_segment(
         segs.push(Segment::V { x: sx, y: mid_y, len: sy - mid_y + 1 });
     }
     if sx < tx {
-        segs.push(Segment::H { x: sx, y: mid_y, len: tx - sx + 1 });
+        segs.push(Segment::H { x: sx, y: mid_y, len: h_corridor_len(sx, tx) });
     } else {
-        segs.push(Segment::H { x: tx, y: mid_y, len: sx - tx + 1 });
+        segs.push(Segment::H { x: tx, y: mid_y, len: h_corridor_len(sx, tx) });
     }
     if ty < mid_y {
         segs.push(Segment::V { x: tx, y: ty, len: mid_y - ty + 1 });

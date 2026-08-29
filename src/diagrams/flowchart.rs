@@ -13,6 +13,7 @@ use crate::canvas::{Canvas, Layer};
 use crate::error::{FigoError, Result};
 use crate::layout::connector::Connector;
 use crate::layout::geom::{Anchor, Rect};
+use crate::layout::{beside_line_label_avail, corridor_label_avail, h_corridor_len};
 use crate::style::{BorderStyle, Charset, LineStyle};
 use crate::text::wrap_label;
 use unicode_width::UnicodeWidthStr;
@@ -327,9 +328,9 @@ impl Flowchart {
             let from_cx = xs[from_idx] + dims[from_idx].0 / 2;
             let to_cx = xs[to_idx] + dims[to_idx].0 / 2;
             let avail = if from_cx != to_cx {
-                (from_cx.abs_diff(to_cx) + 1).saturating_sub(4).max(2).min(self.width)
+                corridor_label_avail(h_corridor_len(from_cx, to_cx), self.width)
             } else {
-                self.width.saturating_sub(from_cx + 2).max(2).min(self.width)
+                beside_line_label_avail(from_cx, self.width)
             };
             let n = wrap_label(label, avail).line_count;
             // The stride below a layer must fit every label block whose

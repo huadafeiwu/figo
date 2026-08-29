@@ -103,6 +103,20 @@ pub struct Connector {
     pub user_width: Option<usize>,
 }
 
+/// Wrap width for a label centered on a horizontal corridor of `len`
+/// cells (both legs inclusive): the corridor minus `---` padding on
+/// each side. Shared by the layout estimation (reserving rows) and the
+/// drawing pass so the two never drift apart.
+pub fn corridor_label_avail(len: usize, w_limit: usize) -> usize {
+    len.saturating_sub(4).max(2).min(w_limit)
+}
+
+/// Wrap width for a label placed beside a vertical line at column `sx`,
+/// bounded by the canvas width.
+pub fn beside_line_label_avail(sx: usize, w_limit: usize) -> usize {
+    w_limit.saturating_sub(sx + 2).max(2).min(w_limit)
+}
+
 impl Connector {
     /// Create a new connector. The arrowhead glyph is derived from the
     /// source anchor so it points INTO the target.
@@ -311,7 +325,7 @@ impl Connector {
             // Purely vertical: label embedded IN the vertical line. The
             // label text covers `|` on its rows; `|` is restored above and
             // below the label block so the connector stays continuous.
-            let avail = w_limit.saturating_sub(sx + 2).max(2).min(w_limit);
+            let avail = beside_line_label_avail(sx, w_limit);
             let wrapped = wrap_label(label, avail);
             let lines = &wrapped.lines;
             let n = wrapped.line_count;
@@ -343,7 +357,7 @@ impl Connector {
             // with `---` restored on both sides.
             let center = if sx != tx { mid_x } else { x + len / 2 };
             // Wrap to corridor width minus 4 (left/right `---` padding).
-            let avail = len.saturating_sub(4).max(2).min(w_limit);
+            let avail = corridor_label_avail(len, w_limit);
             let wrapped = wrap_label(label, avail);
             let lines = &wrapped.lines;
             let n = wrapped.line_count;
