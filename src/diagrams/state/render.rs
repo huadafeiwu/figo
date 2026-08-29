@@ -116,12 +116,11 @@ impl<'a> StateDiagram<'a> {
             let Some(text) = t.label.as_ref() else { continue };
             let geom = &trans_geoms[idx];
             let row = label_rows.get(&idx).copied().unwrap_or(0);
-            let base_x = if row > 0 {
-                let fwd = geom.from_cx <= geom.to_cx;
-                if fwd { geom.from_cx } else { geom.to_cx }
-            } else {
-                geom.base_x
-            };
+            // Same anchor the draw side uses (see TransGeom): stacked
+            // labels (row > 0) travel along a leg, row-0 labels center on
+            // the corridor. Sizing with a different anchor under-sizes
+            // the canvas and forces the draw-side clamp to move labels.
+            let base_x = if row > 0 { geom.stacked_base_x } else { geom.base_x };
             let avail = if geom.avail > 0 {
                 geom.avail
             } else {
@@ -757,7 +756,8 @@ fn draw_external_transition(
                     label_x = label_x.max(left_edge).min(right_edge.saturating_sub(lw));
                     let label_y = block_top + i;
                     // Scene D: don't let label cover any box.
-                    label_x = avoid_box_x(label_x, lw, label_y, from, to, all_layouts);
+                    label_x =
+                        avoid_box_x(label_x, lw, label_y, from, to, all_layouts, canvas_width);
                     surface.put_str_layered(label_x, label_y, line, Layer::Label);
 
                     // Restore `---` on both sides of the label on the corridor row.
@@ -882,7 +882,8 @@ fn draw_external_transition(
 
         let (lines, num_lines, _) = wrap_label(text, avail);
 
-        let base_x = if row > 0 { if forward { from_cx } else { to_cx } } else { geom.base_x };
+        // Same anchor build() sizes the canvas with (see TransGeom).
+        let base_x = if row > 0 { geom.stacked_base_x } else { geom.base_x };
 
         let block_top = if row == 0 {
             effective_route_y.saturating_sub(num_lines / 2)
@@ -898,11 +899,11 @@ fn draw_external_transition(
             label_x = label_x.min(canvas_width.saturating_sub(lw));
             // Clamp label to corridor bounds when embedded.
             if embed_in_corridor && lw < corridor_w {
-                label_x = label_x.max(left_x).min(right_x + 1 - lw);
+                label_x = label_x.max(left_x).min((right_x + 1).saturating_sub(lw));
             }
             let label_y = block_top + i;
             // Scene D: don't let label cover any box.
-            label_x = avoid_box_x(label_x, lw, label_y, from, to, all_layouts);
+            label_x = avoid_box_x(label_x, lw, label_y, from, to, all_layouts, canvas_width);
             surface.put_str_layered(label_x, label_y, line, Layer::Label);
             label_positions.push((label_x, lw, label_y));
         }
@@ -1016,7 +1017,10 @@ fn reroute_leg_around_boxes(
 
 /// Scene D: Adjust label_x so the label [label_x, label_x+lw) does not
 /// overlap any box at row label_y. If it does, shift it left or right
-/// to the nearest non-overlapping position.
+/// to the nearest non-overlapping position. A shift that would push the
+/// label past the right canvas edge is never taken — out-of-bounds
+/// writes are silently dropped by the canvas, which would lose label
+/// characters.
 fn avoid_box_x(
     mut label_x: usize,
     lw: usize,
@@ -1024,21 +1028,29 @@ fn avoid_box_x(
     from: Rect,
     to: Rect,
     all_layouts: &[StateLayout],
+    canvas_width: usize,
 ) -> usize {
-    let label_end = label_x + lw;
     for layout in all_layouts {
         let r = &layout.rect;
         if r == &from || r == &to {
             continue;
         }
-        // Does label overlap this box at this y?
+        // Does label overlap this box at this y? label_end is recomputed
+        // each iteration — label_x may already have moved for an earlier
+        // box in this same loop.
+        let label_end = label_x + lw;
         if label_y >= r.y && label_y < r.bottom() && label_end > r.x && label_x < r.right() {
-            // Try shifting right past the box.
+            // Shifting right past the box is only valid when the label
+            // still fits inside the canvas. Shifting left always fits:
+            // the label ends at r.x, which is inside the canvas.
+            let shift_right_ok = r.right() + lw <= canvas_width;
             let shift_right = r.right();
             // Try shifting left before the box.
             let shift_left = r.x.saturating_sub(lw);
-            // Pick the shift closer to original position.
-            if shift_right.saturating_sub(label_x) <= label_x.saturating_sub(shift_left) {
+            // Pick the valid shift closer to original position.
+            if shift_right_ok
+                && shift_right.saturating_sub(label_x) <= label_x.saturating_sub(shift_left)
+            {
                 label_x = shift_right;
             } else {
                 label_x = shift_left;
@@ -1087,5 +1099,80 @@ fn draw_self_loop(
             let lx = (loop_x + 2).min(canvas_width.saturating_sub(lw));
             surface.put_str_layered(lx, top + i, line, Layer::Label);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state_layout(id: &str, x: usize, y: usize, w: usize, h: usize) -> StateLayout {
+        StateLayout {
+            id: id.into(),
+            label: id.into(),
+            state_type: StateType::Simple,
+            rect: Rect::new(x, y, w, h),
+        }
+    }
+
+    #[test]
+    fn avoid_box_x_right_shift_never_overflows_canvas() {
+        // Box near the right edge: shifting right would push a 20-wide
+        // label past the canvas (90 + 20 > 100) — must shift left instead.
+        // The old code returned 90, silently dropping the last 10 chars.
+        let from = Rect::new(0, 0, 10, 3);
+        let to = Rect::new(0, 10, 10, 3);
+        let layouts = vec![
+            state_layout("from", 0, 0, 10, 3),
+            state_layout("to", 0, 10, 10, 3),
+            state_layout("obs", 60, 4, 30, 3),
+        ];
+        let x = avoid_box_x(62, 20, 5, from, to, &layouts, 100);
+        assert!(x + 20 <= 100, "label overflows canvas: x={x}, lw=20, canvas=100");
+        assert_eq!(x, 40, "should shift left before the box at x=60");
+    }
+
+    #[test]
+    fn avoid_box_x_right_shift_when_it_fits() {
+        // Shifting right past the box is closer and fits: take it.
+        let from = Rect::new(0, 0, 10, 3);
+        let to = Rect::new(0, 10, 10, 3);
+        let layouts = vec![
+            state_layout("from", 0, 0, 10, 3),
+            state_layout("to", 0, 10, 10, 3),
+            state_layout("obs", 20, 4, 8, 3),
+        ];
+        let x = avoid_box_x(22, 8, 5, from, to, &layouts, 100);
+        assert_eq!(x, 28, "closer valid shift is right past the box (right edge 28)");
+    }
+
+    #[test]
+    fn avoid_box_x_prefers_left_when_right_does_not_fit() {
+        // Right edge of the box + lw exceeds the canvas even though the
+        // right shift is closer — the left shift must win.
+        let from = Rect::new(0, 0, 10, 3);
+        let to = Rect::new(0, 10, 10, 3);
+        let layouts = vec![
+            state_layout("from", 0, 0, 10, 3),
+            state_layout("to", 0, 10, 10, 3),
+            state_layout("obs", 70, 4, 8, 3),
+        ];
+        let x = avoid_box_x(71, 8, 5, from, to, &layouts, 80);
+        assert!(x + 8 <= 80, "label overflows canvas: x={x}");
+        assert_eq!(x, 62, "right shift (78+8>80) invalid, left shift to 70-8=62");
+    }
+
+    #[test]
+    fn avoid_box_x_no_overlap_untouched() {
+        // Label doesn't overlap any box: position unchanged.
+        let from = Rect::new(0, 0, 10, 3);
+        let to = Rect::new(0, 10, 10, 3);
+        let layouts = vec![
+            state_layout("from", 0, 0, 10, 3),
+            state_layout("to", 0, 10, 10, 3),
+            state_layout("obs", 50, 4, 8, 3),
+        ];
+        let x = avoid_box_x(20, 8, 5, from, to, &layouts, 100);
+        assert_eq!(x, 20);
     }
 }

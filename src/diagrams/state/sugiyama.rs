@@ -39,6 +39,12 @@ pub struct TransGeom {
     pub avail: usize,
     /// X-center for the label block.
     pub base_x: usize,
+    /// X-anchor for stacked label blocks (row > 0): the `from` leg's cx
+    /// for downward edges, the `to` leg's cx for upward edges, and the
+    /// corridor midpoint for same-layer edges. `build()` must size the
+    /// canvas with this same anchor — deriving it differently there than
+    /// in `draw_external_transition` under-sizes the canvas.
+    pub stacked_base_x: usize,
     /// Whether from and to are in the same layer (horizontal arrow).
     pub same_layer: bool,
 }
@@ -417,6 +423,7 @@ fn compute_single_geom(
             embed,
             avail,
             base_x,
+            stacked_base_x: base_x,
             same_layer: true,
         }
     } else {
@@ -432,6 +439,9 @@ fn compute_single_geom(
         };
         // For aligned edges (corridor_w == 0), label goes beside the leg.
         let base_x = if corridor_w == 0 { from_cx } else { (from_cx + to_cx) / 2 };
+        // Stacked labels (row > 0) anchor on the leg they travel along:
+        // the from leg for downward edges, the to leg for upward edges.
+        let stacked_base_x = if from.y < to.y { from_cx } else { to_cx };
         TransGeom {
             from_cx,
             to_cx,
@@ -441,6 +451,7 @@ fn compute_single_geom(
             embed,
             avail,
             base_x,
+            stacked_base_x,
             same_layer: false,
         }
     }
@@ -530,5 +541,29 @@ mod tests {
         assert_eq!(geoms[0].corridor_w, 0);
         assert!(!geoms[0].embed);
         assert!(!geoms[0].same_layer);
+    }
+
+    #[test]
+    fn compute_single_geom_stacked_base_x() {
+        // Downward edge (from above): the stacked label anchors on the
+        // from leg's center column.
+        let from = Rect::new(10, 0, 14, 3); // cx = 17
+        let to = Rect::new(50, 8, 14, 3); // cx = 57
+        let g = compute_single_geom(&from, &to, false, Some("lbl"), 120);
+        assert_eq!(g.stacked_base_x, 17, "downward edge anchors on from_cx");
+
+        // Upward edge (from below): the stacked label anchors on the
+        // to leg's center column — NOT min(from_cx, to_cx).
+        let from = Rect::new(10, 8, 14, 3); // cx = 17, lower layer
+        let to = Rect::new(50, 0, 14, 3); // cx = 57, upper layer
+        let g = compute_single_geom(&from, &to, false, Some("lbl"), 120);
+        assert_eq!(g.stacked_base_x, 57, "upward edge anchors on to_cx");
+
+        // Same-layer edge: stacked labels share the corridor midpoint.
+        let a = Rect::new(0, 4, 14, 3); // cx = 7
+        let b = Rect::new(40, 4, 14, 3); // cx = 47
+        let g = compute_single_geom(&a, &b, true, Some("lbl"), 120);
+        assert_eq!(g.stacked_base_x, g.base_x, "same-layer anchors on corridor midpoint");
+        assert_eq!(g.base_x, (14 + 40) / 2);
     }
 }

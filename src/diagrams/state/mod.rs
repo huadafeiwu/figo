@@ -420,4 +420,36 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_stacked_upward_labels_not_lost() {
+        // Two upward (bottom → top) transitions whose long labels overlap
+        // horizontally get stacked on different rows (row 0 / row 1).
+        // Stacked labels anchor on the `to` leg (TransGeom::stacked_base_x);
+        // the canvas must be sized with that same anchor, otherwise the
+        // label is clamped or shifted at draw time and can lose characters.
+        let out = StateDiagram::new(120, Charset::Unicode)
+            .add_state(StateNode {
+                id: "top".into(),
+                label: "TOP".into(),
+                state_type: StateType::Simple,
+            })
+            .add_state(StateNode {
+                id: "left".into(),
+                label: "LEFT".into(),
+                state_type: StateType::Simple,
+            })
+            .add_state(StateNode {
+                id: "right".into(),
+                label: "RIGHT".into(),
+                state_type: StateType::Simple,
+            })
+            .initial("left")
+            .add_transition("left", "top", Some("back_label_alpha_return"))
+            .add_transition("right", "top", Some("back_label_beta_return"))
+            .build()
+            .unwrap();
+        assert!(out.contains("back_label_alpha_return"), "full label lost or wrapped:\n{out}");
+        assert!(out.contains("back_label_beta_return"), "full label lost or wrapped:\n{out}");
+    }
 }
