@@ -1,15 +1,15 @@
 //! Sequence diagrams with participants and messages.
 //!
-//! Each participant occupies a "lane" of width `lane_width` cells. The
-//! participant's box is inset by `LANE_GAP_HALF` cells on each side, so
-//! adjacent boxes display a `LANE_GAP` (2-cell) horizontal gap regardless of
-//! how many participants are stacked.
+//! Each participant occupies a "lane" of `LaneLayout::lane_width` cells.
+//! The participant's box is inset within the lane so adjacent boxes show
+//! a `LANE_GAP` (2-cell) horizontal gap.
 //!
-//! Messages are routed through [`crate::layout::Connector`] with a one-cell
-//! invisible rect at each lifeline column. Connector's z-order puts the
-//! arrowhead at [`Layer::ConnectorEnd`] (sits cleanly outside the lifeline)
-//! and the label at [`Layer::Label`] which never overlaps a lifeline column
-//! because the label is clamped to the gap between the two endpoints.
+//! Lane sizing follows the global label rules: participant names are
+//! structural (lanes always fit them), and message labels widen the
+//! lane-to-lane distance — or the right margin for the last lane — so
+//! they fit on one line, bounded by the display budget. Labels that
+//! would exceed the budget wrap inside their [`LaneLayout::label_region`],
+//! which never covers a lifeline column.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -27,6 +27,14 @@ const LANE_GAP: usize = 2;
 /// One-sided inset within a lane (cells reserved on the left of every box).
 const LANE_GAP_HALF: usize = LANE_GAP / 2;
 
+/// Columns a self-message loop occupies right of its lifeline
+/// (`draw_self_message` draws the loop over `lifeline .. lifeline + 3`).
+const SELF_LOOP_COLS: usize = 4;
+
+/// Cap on the ideal lane spread, so a wide canvas with few participants
+/// does not produce absurdly wide boxes. Names and labels may exceed it.
+const IDEAL_LANE_CAP: usize = 40;
+
 /// A message in a sequence diagram.
 #[derive(Debug, Clone)]
 pub struct SequenceMessage {
@@ -41,6 +49,11 @@ pub struct SequenceMessage {
 /// Builder for sequence diagrams.
 pub struct SequenceDiagram<'a> {
     width: usize,
+    /// Display budget for label-driven lane growth: the canvas may grow
+    /// beyond `width` for labels, but never beyond this. Defaults to
+    /// `width` (no growth) so library renders stay deterministic; the
+    /// CLI raises it to the detected terminal width.
+    label_budget: usize,
     charset: Charset,
     participants: Vec<&'a str>,
     messages: Vec<SequenceMessage>,
@@ -50,7 +63,20 @@ pub struct SequenceDiagram<'a> {
 impl<'a> SequenceDiagram<'a> {
     /// Create a new sequence diagram builder.
     pub fn new(width: usize, charset: Charset) -> Self {
-        Self { width, charset, participants: Vec::new(), messages: Vec::new(), color: false }
+        Self {
+            width,
+            label_budget: width,
+            charset,
+            participants: Vec::new(),
+            messages: Vec::new(),
+            color: false,
+        }
+    }
+
+    /// Set the display budget for label-driven lane growth.
+    pub fn label_budget(mut self, budget: usize) -> Self {
+        self.label_budget = budget;
+        self
     }
 
     /// Add a participant.
@@ -89,33 +115,23 @@ impl<'a> SequenceDiagram<'a> {
         let tee_up = rounded.tee_up;
 
         let n = self.participants.len();
-        let max_name_len = self.participants.iter().map(|p| p.width()).max().unwrap_or(5);
+        let name_to_idx: HashMap<&str, usize> =
+            self.participants.iter().enumerate().map(|(i, &p)| (p, i)).collect();
 
-        // Box width = lane_width - LANE_GAP so adjacent boxes are separated
-        // by a 2-cell horizontal gap. Lane width is the per-participant
-        // allotment; the box is centered horizontally with 1 cell padding
-        // on each side.
-        let minimum_box_w = max_name_len + 4;
-        let minimum_lane_w = minimum_box_w + LANE_GAP;
-        let ideal_lane_w = self.width / n.max(1);
-        let lane_width = ideal_lane_w.max(minimum_lane_w).min(40).min(self.width);
-        let box_width = lane_width - LANE_GAP;
-        let actual_width = (lane_width * n).max(self.width);
+        let layout = LaneLayout::new(
+            &self.participants,
+            &self.messages,
+            &name_to_idx,
+            self.width,
+            self.label_budget,
+        );
+        let box_width = layout.box_width();
 
         if box_width < 6 {
             return Err(FigoError::InvalidDimensions(
                 "width too small for participant names".into(),
             ));
         }
-
-        let name_to_idx: HashMap<&str, usize> =
-            self.participants.iter().enumerate().map(|(i, &p)| (p, i)).collect();
-
-        // Compute lifeline x as the exact center column of each header box
-        // so the vertical lifeline visually anchors to the box regardless of
-        // box width parity.
-        let lifeline_x_for =
-            |i: usize| -> usize { i * lane_width + LANE_GAP_HALF + (box_width - 1) / 2 };
 
         // Vertical layout:
         //   row 0                header top border
@@ -124,37 +140,26 @@ impl<'a> SequenceDiagram<'a> {
         //   rows 3..total_height lifelines (Layer::Connector) interleaved with messages
         let header_height: usize = 3;
 
-        // Pre-compute label line counts per message so we can size the
-        // canvas and compute each message's arrow_y dynamically.
-        let inner_w_for = |from_idx: usize, to_idx: usize| -> usize {
-            let from_x = lifeline_x_for(from_idx);
-            let to_x = lifeline_x_for(to_idx);
-            let left_x = from_x.min(to_x);
-            let right_x = from_x.max(to_x);
-            let inner_left = left_x + 1;
-            let inner_right = right_x.saturating_sub(1);
-            inner_right.saturating_sub(inner_left) + 1
-        };
-
+        // Pre-compute label line counts per message from the lane
+        // regions — the same widths the draw pass wraps at — so canvas
+        // height always matches what gets drawn.
         let msg_heights: Vec<usize> = self
             .messages
             .iter()
             .map(|msg| {
                 let from_idx = name_to_idx.get(msg.from.as_str()).copied().unwrap_or(0);
                 let to_idx = name_to_idx.get(msg.to.as_str()).copied().unwrap_or(0);
-                if from_idx == to_idx {
-                    let avail = (self.width / 2).clamp(10, 40);
-                    wrap_label(&msg.label, avail).line_count.max(1) + 3
-                } else {
-                    let inner_w = inner_w_for(from_idx, to_idx).max(2);
-                    wrap_label(&msg.label, inner_w).line_count.max(1) + 2
-                }
+                let (left, right) = layout.label_region(from_idx, to_idx);
+                let avail = right.saturating_sub(left) + 1;
+                let label_lines = wrap_label(&msg.label, avail).line_count;
+                let base = if from_idx == to_idx { 3 } else { 2 };
+                label_lines.max(1) + base
             })
             .collect();
         let msg_rows: usize = msg_heights.iter().sum();
         let total_height = header_height + msg_rows + 1;
 
-        let mut canvas = Canvas::new(actual_width, total_height);
+        let mut canvas = Canvas::new(layout.total_width, total_height);
 
         // Paint pass 1: lifelines at Layer::Connector (low) drawn FIRST so
         // they extend from the header bottom down to the canvas bottom.
@@ -162,7 +167,7 @@ impl<'a> SequenceDiagram<'a> {
         let lifeline_start = header_height;
         let lifeline_end = total_height.saturating_sub(1);
         for i in 0..n {
-            let lifeline_x = lifeline_x_for(i);
+            let lifeline_x = layout.lifeline(i);
             canvas.put_vertical_layered(
                 lifeline_x,
                 lifeline_start,
@@ -175,12 +180,12 @@ impl<'a> SequenceDiagram<'a> {
         // Paint pass 2: header boxes at Layer::NodeBorder, names at
         // Layer::NodeContent, and the tee-junction where lifeline meets box.
         for (i, name) in self.participants.iter().enumerate() {
-            let hx = i * lane_width + LANE_GAP_HALF;
+            let hx = i * layout.lane_width + LANE_GAP_HALF;
             canvas.draw_rect(hx, 0, box_width, header_height, &rounded)?;
             let name_x = hx + (box_width.saturating_sub(name.width())) / 2;
             canvas.put_str_layered(name_x, 1, name, Layer::NodeContent, None);
             // Tee-junction glyph anchors the lifeline visually to the header.
-            let lifeline_x = lifeline_x_for(i);
+            let lifeline_x = layout.lifeline(i);
             canvas.put_layered(lifeline_x, header_height - 1, tee_up, Layer::NodeBorder, None);
         }
 
@@ -192,16 +197,12 @@ impl<'a> SequenceDiagram<'a> {
         for (mi, msg) in self.messages.iter().enumerate() {
             let from_idx = name_to_idx.get(msg.from.as_str()).copied().unwrap_or(0);
             let to_idx = name_to_idx.get(msg.to.as_str()).copied().unwrap_or(0);
-            let from_x = lifeline_x_for(from_idx);
-            let to_x = lifeline_x_for(to_idx);
+            let from_x = layout.lifeline(from_idx);
+            let to_x = layout.lifeline(to_idx);
             let msg_h = msg_heights[mi];
-            let label_lines = if from_idx == to_idx {
-                let avail = (self.width / 2).clamp(10, 40);
-                wrap_label(&msg.label, avail).lines
-            } else {
-                let inner_w = inner_w_for(from_idx, to_idx).max(2);
-                wrap_label(&msg.label, inner_w).lines
-            };
+            let (region_left, region_right) = layout.label_region(from_idx, to_idx);
+            let region_w = region_right.saturating_sub(region_left) + 1;
+            let label_lines = wrap_label(&msg.label, region_w).lines;
             let num_lines = label_lines.len().max(1);
             // Place the arrow below the label block so labels never overlap
             // the header or previous message's arrow.
@@ -211,8 +212,7 @@ impl<'a> SequenceDiagram<'a> {
                 // Self-message: small loop to the right of the lifeline.
                 Self::draw_self_message(&mut canvas, from_x, arrow_y, v_ch, &label_lines);
             } else {
-                let (left_x, right_x, left_to_right) =
-                    if from_x < to_x { (from_x, to_x, true) } else { (to_x, from_x, false) };
+                let left_to_right = from_x < to_x;
 
                 // 1×1 invisible endpoint rects on the arrow row. Connector
                 // computes a single horizontal segment between them.
@@ -241,15 +241,15 @@ impl<'a> SequenceDiagram<'a> {
                 canvas.put_layered(from_x, arrow_y, v_ch, Layer::Connector, None);
                 canvas.put_layered(to_x, arrow_y, v_ch, Layer::Connector, None);
 
-                // Label wrapped to the gap between the two lifelines so it
-                // never overlaps a lifeline column.
-                let inner_left = left_x + 1;
-                let inner_right = right_x.saturating_sub(1);
-                let inner_w = inner_right.saturating_sub(inner_left) + 1;
+                // Label centered in its region — the free columns between
+                // the two lifelines — so it never covers a lifeline.
                 for (i, line) in label_lines.iter().enumerate() {
-                    let lw = unicode_width::UnicodeWidthStr::width(line.as_str());
-                    let label_x =
-                        if lw <= inner_w { inner_left + (inner_w - lw) / 2 } else { inner_left };
+                    let lw = UnicodeWidthStr::width(line.as_str());
+                    let label_x = if lw <= region_w {
+                        region_left + (region_w - lw) / 2
+                    } else {
+                        region_left
+                    };
                     let ly = arrow_y.saturating_sub(num_lines).saturating_add(i);
                     canvas.put_str_layered(label_x, ly, line, Layer::Label, None);
                 }
@@ -271,8 +271,8 @@ impl<'a> SequenceDiagram<'a> {
     }
 
     /// Draw a 2-row self-message loop to the right of the lifeline. The
-    /// label is placed above the loop (not on the arrow row) and clamped
-    /// to the canvas width.
+    /// label lines (already wrapped to the lane region) start right of
+    /// the loop, above the arrow row.
     fn draw_self_message(
         canvas: &mut Canvas,
         from_x: usize,
@@ -293,14 +293,13 @@ impl<'a> SequenceDiagram<'a> {
         canvas.put_layered(from_x, arrow_y + 2, '<', Layer::ConnectorEnd, None);
         canvas.put_horizontal_layered(from_x + 1, arrow_y + 2, 2, h_ch, Layer::Connector);
         // Multi-line label to the right of the loop, starting above the
-        // arrow row so it never overlaps the loop glyphs.
+        // arrow row so it never overlaps the loop glyphs. Lines are
+        // pre-wrapped to the lane region, which starts right of the loop.
         let num_lines = label_lines.len().max(1);
         let label_start_y = arrow_y.saturating_sub(num_lines);
-        let canvas_w = canvas.width();
+        let label_x = from_x + SELF_LOOP_COLS;
         for (i, line) in label_lines.iter().enumerate() {
-            let line_w = unicode_width::UnicodeWidthStr::width(line.as_str());
-            let lx = (loop_top_x + 2).min(canvas_w.saturating_sub(line_w));
-            canvas.put_str_layered(lx, label_start_y + i, line, Layer::Label, None);
+            canvas.put_str_layered(label_x, label_start_y + i, line, Layer::Label, None);
         }
     }
 
@@ -325,6 +324,111 @@ impl fmt::Display for SequenceDiagram<'_> {
         match self.build() {
             Ok(s) => write!(f, "{s}"),
             Err(e) => write!(f, "[figo error: {e}]"),
+        }
+    }
+}
+
+/// Lane geometry for a sequence diagram — the single source for where
+/// every lifeline sits and how much horizontal room each message label
+/// has.
+struct LaneLayout {
+    /// Number of participant lanes.
+    n: usize,
+    /// Uniform width of every participant lane.
+    lane_width: usize,
+    /// Total canvas width (lanes plus the last lane's label margin).
+    total_width: usize,
+}
+
+impl LaneLayout {
+    fn new(
+        participants: &[&str],
+        messages: &[SequenceMessage],
+        name_to_idx: &HashMap<&str, usize>,
+        width: usize,
+        budget: usize,
+    ) -> Self {
+        let n = participants.len().max(1);
+        let max_name_w = participants.iter().map(|p| p.width()).max().unwrap_or(5);
+        // Structural: the box must hold the widest name (box interior is
+        // name + 4 cells of padding; the lane adds the inter-box gap).
+        let name_lane = max_name_w + 4 + LANE_GAP;
+        // Ideal spread across the canvas, capped so a wide canvas with
+        // few participants doesn't produce absurdly wide boxes.
+        let base_lane = (width / n).min(IDEAL_LANE_CAP).max(name_lane);
+
+        // Label-driven requirements: a label needs its flanking lifelines
+        // far enough apart to hold the unwrapped label. Self labels
+        // additionally reserve the loop columns right of their lifeline.
+        let mut label_lane = 0usize;
+        let mut label_margin = 0usize;
+        for msg in messages {
+            let label = &msg.label;
+            if label.is_empty() {
+                continue;
+            }
+            let Some(&fi) = name_to_idx.get(msg.from.as_str()) else { continue };
+            let Some(&ti) = name_to_idx.get(msg.to.as_str()) else { continue };
+            let lw = label.width();
+            if fi == ti {
+                // Self label: loop columns, the label, one clear column
+                // before the next obstacle.
+                let need = SELF_LOOP_COLS + lw + 1;
+                if fi + 1 < n {
+                    label_lane = label_lane.max(need);
+                } else {
+                    label_margin = label_margin.max(need);
+                }
+            } else {
+                // One clear column on each side of the label; a label
+                // spanning several lanes divides its requirement.
+                let span = fi.abs_diff(ti).max(1);
+                label_lane = label_lane.max((lw + 2).div_ceil(span));
+            }
+        }
+
+        // Budget bound: label-driven growth may push the canvas beyond
+        // the design width but never beyond the display budget. The
+        // structural (name) floor always wins — if names already exceed
+        // the budget, the canvas grows anyway because names cannot wrap.
+        let lane_cap = (budget / n).max(base_lane);
+        let lane_width = base_lane.max(label_lane).min(lane_cap);
+        let margin_cap = budget.saturating_sub(lane_width * n);
+        let right_margin = label_margin.min(margin_cap);
+
+        let total_width = (lane_width * n + right_margin).max(width);
+        LaneLayout { n, lane_width, total_width }
+    }
+
+    /// Interior width of a participant box.
+    fn box_width(&self) -> usize {
+        self.lane_width - LANE_GAP
+    }
+
+    /// Lifeline column of participant `i` — the exact center column of
+    /// its header box.
+    fn lifeline(&self, i: usize) -> usize {
+        i * self.lane_width + LANE_GAP_HALF + (self.box_width() - 1) / 2
+    }
+
+    /// Free columns a message label may occupy (inclusive bounds),
+    /// between its flanking obstacles: the two lifelines for a regular
+    /// message, or the self-loop's right edge and the next lifeline (or
+    /// canvas edge for the last lane) for a self message. A label
+    /// wrapped to this region never covers a lifeline column.
+    fn label_region(&self, from_idx: usize, to_idx: usize) -> (usize, usize) {
+        if from_idx == to_idx {
+            let lx = self.lifeline(from_idx);
+            let right = if from_idx + 1 < self.n {
+                self.lifeline(from_idx + 1).saturating_sub(1)
+            } else {
+                self.total_width.saturating_sub(1)
+            };
+            (lx + SELF_LOOP_COLS, right)
+        } else {
+            let a = self.lifeline(from_idx);
+            let b = self.lifeline(to_idx);
+            (a.min(b) + 1, a.max(b).saturating_sub(1))
         }
     }
 }
@@ -443,6 +547,111 @@ mod tests {
                 /*reversed=*/ true,
             );
         }
+    }
+
+    #[test]
+    fn test_self_label_never_covers_lifeline() {
+        // Regression: self-message labels used a fixed wrap width
+        // unrelated to lane geometry, spilling across neighbouring
+        // lifelines (Label layer > Connector layer — the covered `|`
+        // vanished). Lanes now widen for the label (within the budget),
+        // and labels wrap to their lane region.
+        let label = "一个很长很长的自环标签测试用例";
+        let out = SequenceDiagram::new(120, Charset::Ascii)
+            .add_participant("A1")
+            .add_participant("A2")
+            .add_participant("A3")
+            .add_participant("A4")
+            .add_participant("A5")
+            .add_message("A1", "A1", label)
+            .build()
+            .unwrap();
+        // Every label row must still show every other lifeline.
+        let lifeline_rows: Vec<&str> = out.lines().skip(3).filter(|l| l.contains('|')).collect();
+        for row in lifeline_rows {
+            if row.contains("自环") || row.contains("标签") {
+                let pipes = row.matches('|').count();
+                assert!(pipes >= 4, "lifeline covered by label ({pipes} pipes):\n{out}");
+            }
+        }
+        for ch in label.chars() {
+            assert!(out.contains(ch), "label char '{ch}' lost:\n{out}");
+        }
+    }
+
+    #[test]
+    fn test_last_lane_self_label_stays_right() {
+        // Regression: the last lane's self label used to be clamped
+        // against the canvas edge and pushed LEFT across its own
+        // lifeline. The lane model now reserves a right margin for it
+        // (within the display budget).
+        let label = "ibv_post_recv 预挂RQ";
+        let out = SequenceDiagram::new(72, Charset::Ascii)
+            .label_budget(160)
+            .add_participant("App 发送方")
+            .add_participant("NIC 发送方")
+            .add_participant("NIC 接收方")
+            .add_participant("App 接收方")
+            .add_message("App 接收方", "App 接收方", label)
+            .build()
+            .unwrap();
+        // With budget for the margin the label fits on one line, right
+        // of its own lifeline, and no lifeline is covered.
+        let label_row = out.lines().find(|l| l.contains("ibv_post_recv")).unwrap();
+        assert_eq!(label_row.matches('|').count(), 4, "lifeline covered:\n{out}");
+
+        // Without budget headroom the label wraps inside its region —
+        // tight, but every character survives.
+        let tight = SequenceDiagram::new(72, Charset::Ascii)
+            .add_participant("App 发送方")
+            .add_participant("NIC 发送方")
+            .add_participant("NIC 接收方")
+            .add_participant("App 接收方")
+            .add_message("App 接收方", "App 接收方", label)
+            .build()
+            .unwrap();
+        for ch in label.chars() {
+            assert!(tight.contains(ch), "label char '{ch}' lost:\n{tight}");
+        }
+    }
+
+    #[test]
+    fn test_long_participant_name_does_not_cover_neighbor() {
+        // Regression: lanes were capped below the structural name width,
+        // so a 44-column name overflowed its box onto the neighbour's
+        // border. Names are structural: the lane grows to fit.
+        let long_name: String = "n".repeat(44);
+        let out = SequenceDiagram::new(120, Charset::Ascii)
+            .add_participant(&long_name)
+            .add_participant("B")
+            .add_message(&long_name, "B", "m")
+            .build()
+            .unwrap();
+        assert_eq!(out.matches('n').count(), 44, "name chars lost:\n{out}");
+        // The name must stay inside its own box: every row of the header
+        // still shows both boxes' borders.
+        for (i, line) in out.lines().take(3).enumerate() {
+            let trimmed = line.trim_end();
+            assert!(
+                trimmed.ends_with('+') || trimmed.ends_with('|'),
+                "header row {i} right border eaten:\n{out}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_label_beyond_budget_wraps_without_loss() {
+        // Labels that cannot fit within the display budget wrap inside
+        // their lane region — never lost, never covering a lifeline.
+        let label: String = "x".repeat(200);
+        let out = SequenceDiagram::new(60, Charset::Ascii)
+            .label_budget(60)
+            .add_participant("A")
+            .add_participant("B")
+            .add_message("A", "B", &label)
+            .build()
+            .unwrap();
+        assert_eq!(out.matches('x').count(), 200, "label chars lost:\n{out}");
     }
 
     /// Asserts the arrowhead glyph in the first message's arrow row is
