@@ -116,16 +116,9 @@ impl<'a> StateDiagram<'a> {
             let Some(text) = t.label.as_ref() else { continue };
             let geom = &trans_geoms[idx];
             let row = label_rows.get(&idx).copied().unwrap_or(0);
-            let label_w_full = UnicodeWidthStr::width(text.as_str());
             let base_x = if row > 0 {
                 let fwd = geom.from_cx <= geom.to_cx;
-                let vcol = if fwd { geom.from_cx } else { geom.to_cx };
-                let right_x = vcol + 2;
-                if right_x + label_w_full <= total_w {
-                    right_x + label_w_full / 2
-                } else {
-                    vcol.saturating_sub(2 + label_w_full / 2)
-                }
+                if fwd { geom.from_cx } else { geom.to_cx }
             } else {
                 geom.base_x
             };
@@ -269,10 +262,14 @@ fn compute_label_rows(
         let to_cx = to.rect.x + to.rect.w / 2;
         let label_x = (from_cx + to_cx) / 2;
         let label_x = label_x.saturating_sub(text.width() / 2);
-        // Group labels by their source layer (from_y only) so labels
-        // departing from the same state are compared for overlap even if
-        // they go to different target layers.
-        let gap_key = (from.rect.y, 0);
+        // Group labels by their vertical gap (y pair only) so labels
+        // in the same route_y row are compared for overlap even if they
+        // connect to different sibling states.
+        let gap_key = if from.rect.y < to.rect.y {
+            (from.rect.y, to.rect.y)
+        } else {
+            (to.rect.y, from.rect.y)
+        };
         // Skip duplicate labels (same text + same gap) — only render the
         // first occurrence to avoid showing the same label twice.
         let is_dup = labels.iter().any(|l| {
@@ -885,22 +882,7 @@ fn draw_external_transition(
 
         let (lines, num_lines, _) = wrap_label(text, avail);
 
-        // For row > 0, offset the label horizontally from the leg column
-        // so it doesn't visually merge with the row-0 label (which sits
-        // at the same column). Offset to the right; if that would exceed
-        // canvas, offset to the left.
-        let label_w = UnicodeWidthStr::width(text);
-        let base_x = if row > 0 {
-            let vcol = if forward { from_cx } else { to_cx };
-            let right_x = vcol + 2;
-            if right_x + label_w <= canvas_width {
-                right_x + label_w / 2
-            } else {
-                vcol.saturating_sub(2 + label_w / 2)
-            }
-        } else {
-            geom.base_x
-        };
+        let base_x = if row > 0 { if forward { from_cx } else { to_cx } } else { geom.base_x };
 
         let block_top = if row == 0 {
             effective_route_y.saturating_sub(num_lines / 2)
