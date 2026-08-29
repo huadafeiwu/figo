@@ -17,21 +17,27 @@ pub fn draw_banner(text: &str, width: usize) -> Result<String> {
         return Err(FigoError::MissingFields("text is empty".to_string()));
     }
 
-    let mut blocks: Vec<String> = Vec::new();
-    for line in &lines {
-        if line.trim().is_empty() {
-            blocks.push(String::new());
-        } else if figlet::can_render(line) {
-            let banner = figlet::render_figlet(line)?;
-            blocks.push(banner.trim_end_matches('\n').to_string());
+    let mut out = String::new();
+    for (li, line) in lines.iter().enumerate() {
+        if li > 0 {
+            out.push('\n');
+        }
+        if figlet::can_render(line) {
+            // render_figlet's own output (rows plus trailing newline) is
+            // the block; blank lines render as six empty rows, matching
+            // the historical output.
+            out.push_str(&figlet::render_figlet(line)?);
         } else {
             // Fallback: plain text, wrapped to the width budget. With no
             // budget (width 0) the line renders unwrapped.
             let avail = if width > 0 { width } else { line.width().max(1) };
-            blocks.push(wrap_label(line, avail).lines.join("\n"));
+            for l in wrap_label(line, avail).lines {
+                out.push_str(&l);
+                out.push('\n');
+            }
         }
     }
-    Ok(blocks.join("\n"))
+    Ok(out)
 }
 
 #[cfg(test)]

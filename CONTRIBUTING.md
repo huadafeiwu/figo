@@ -52,6 +52,30 @@ See [AGENTS.md](AGENTS.md) for the full coding conventions. Key points:
 - **Use imports** — no fully qualified paths inline
 - **Run clippy, fmt, and tests** before committing
 
+## Label Layout Rules
+
+Every diagram type follows the same three rules when placing labels.
+Derive all bounds from geometry, content, or the display budget — never
+from magic numbers:
+
+1. **Structural minimums always win.** Content that cannot wrap
+   (participant names, table headers, packet field bit widths) sizes
+   the canvas unconditionally; the canvas grows to fit it.
+2. **Labels widen their geometry up to the display budget.** A label's
+   carrier (corridor, lane, column, box) widens so the label fits on
+   one line. The budget is `max(user width, detected terminal width)`;
+   library builders default it to the design width so renders stay
+   deterministic, and the CLI raises it to the detected width.
+3. **Past the budget, wrap greedily.** Labels that cannot fit wrap
+   inside their region using the full region width (fewest lines), and
+   are never truncated or drawn over other elements — a label region is
+   always the free cells between its flanking obstacles (lifelines,
+   borders, other structures).
+
+Regression tests must cover the loss cases: no label character may
+ever be silently dropped, and no label may cover another element's
+glyphs.
+
 ## Pull Request Process
 
 1. Update documentation if your changes affect the public API.
