@@ -116,7 +116,7 @@ impl<'a> BoxArt<'a> {
         // add to the box height so no characters are lost.
         let title_lines: Vec<String> = match self.title {
             Some(t) if !t.is_empty() && self.width > 4 => {
-                wrap_label(t, self.width.saturating_sub(4)).0
+                wrap_label(t, self.width.saturating_sub(4)).lines
             }
             _ => Vec::new(),
         };

@@ -12,6 +12,7 @@ use std::fmt;
 use crate::canvas::Canvas;
 use crate::error::{FigoError, Result};
 use crate::style::{BorderStyle, Charset};
+use crate::text::wrap_label;
 
 use render::split_per_word;
 
@@ -90,7 +91,7 @@ impl PacketDiagram {
                         let inner_w = fr.saturating_sub(fl + 1);
                         // Never truncate — wrap_label uses .max(2) so even
                         // inner_w=0/1 is safe (wraps to 2-col lines).
-                        let (lines, _, _) = crate::text::wrap_label(&span.name, inner_w);
+                        let lines = wrap_label(&span.name, inner_w).lines;
                         if lines.is_empty() { vec![String::new()] } else { lines }
                     })
                     .collect()

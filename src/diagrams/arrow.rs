@@ -8,6 +8,7 @@ use std::fmt;
 use crate::canvas::Canvas;
 use crate::error::Result;
 use crate::style::{Charset, LineStyle};
+use crate::text::{WrappedLabel, wrap_label};
 use unicode_width::UnicodeWidthStr;
 
 /// Draw a standalone arrow.
@@ -121,7 +122,6 @@ impl Arrow {
     }
 
     fn draw_horizontal(&self) -> Result<String> {
-        use crate::text::wrap_label;
         let (line, right_head) = self.arrow_chars();
         let (_, left_head) = self.left_arrow_chars();
 
@@ -136,11 +136,10 @@ impl Arrow {
 
         // Wrap long labels to the user-specified width (hard upper limit).
         let max_label_w = self.width.min(total_width.max(10));
-        let (label_lines, num_lines, _) = if label.is_empty() {
-            (Vec::new(), 0usize, 0usize)
-        } else {
-            wrap_label(label, max_label_w)
-        };
+        let wrapped =
+            if label.is_empty() { WrappedLabel::default() } else { wrap_label(label, max_label_w) };
+        let label_lines = wrapped.lines;
+        let num_lines = wrapped.line_count;
         let height = if label.is_empty() { 1usize } else { num_lines + 2 };
         let width = self.width.max(total_width);
 
@@ -181,7 +180,6 @@ impl Arrow {
     }
 
     fn draw_vertical(&self) -> Result<String> {
-        use crate::text::wrap_label;
         let (head, line) = if self.direction == "up" {
             match (self.style, self.charset) {
                 (LineStyle::Simple, Charset::Unicode) => ("↑", "│"),
@@ -207,11 +205,10 @@ impl Arrow {
         // doesn't have its last character clipped at the canvas edge.
         // Wrap to the user-specified width (hard upper limit).
         let max_label_w = self.width.saturating_sub(1).max(10);
-        let (label_lines, _num_lines, max_line_w) = if label.is_empty() {
-            (Vec::new(), 0usize, 0usize)
-        } else {
-            wrap_label(label, max_label_w)
-        };
+        let wrapped =
+            if label.is_empty() { WrappedLabel::default() } else { wrap_label(label, max_label_w) };
+        let label_lines = wrapped.lines;
+        let max_line_w = wrapped.max_width;
         let width = if label.is_empty() { 1usize } else { (max_line_w + 1).min(self.width) };
         let height = self.length + 1;
 

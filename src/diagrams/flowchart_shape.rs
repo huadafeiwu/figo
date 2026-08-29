@@ -11,6 +11,7 @@
 
 use crate::canvas::{Canvas, Layer};
 use crate::style::Charset;
+use crate::text::wrap_label;
 use unicode_width::UnicodeWidthStr;
 
 /// Node shapes in a flowchart.
@@ -45,7 +46,7 @@ pub fn node_dims(label: &str, shape: NodeShape, total_width: usize) -> (usize, u
             // If label doesn't fit on one line, compute multi-line height.
             if label_w + 4 > w {
                 let inner_w = w.saturating_sub(2).max(2);
-                let (_, n, _) = crate::text::wrap_label(label, inner_w);
+                let n = wrap_label(label, inner_w).line_count;
                 (w, 2 + n)
             } else {
                 (w, 3)

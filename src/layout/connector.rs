@@ -13,6 +13,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::canvas::{Canvas, Layer};
 use crate::style::{Charset, LineStyle};
+use crate::text::wrap_label;
 
 use super::geom::{Anchor, Rect};
 use super::node::{horizontal_line_glyph, vertical_line_glyph};
@@ -207,7 +208,7 @@ impl Connector {
             // the canvas was widened for node boxes).
             let lx = route_x + 1;
             let avail = canvas_w.saturating_sub(lx).max(10);
-            let (lines, _, _) = crate::text::wrap_label(label, avail);
+            let lines = wrap_label(label, avail).lines;
             for (i, line) in lines.iter().enumerate() {
                 let line_w = UnicodeWidthStr::width(line.as_str());
                 let clamped_lx = lx.min(canvas_w.saturating_sub(line_w));
@@ -298,7 +299,6 @@ impl Connector {
     /// on both sides. For purely vertical connectors, the label sits
     /// beside the line and `|` is restored above/below.
     fn draw_label(&self, canvas: &mut Canvas, label: &str, path: &[Segment]) {
-        use crate::text::wrap_label;
         let (sx, sy) = self.source;
         let (tx, ty) = self.target;
         let mid_x = (sx + tx) / 2;
@@ -312,7 +312,9 @@ impl Connector {
             // label text covers `|` on its rows; `|` is restored above and
             // below the label block so the connector stays continuous.
             let avail = w_limit.saturating_sub(sx + 2).max(2).min(w_limit);
-            let (lines, n, _) = wrap_label(label, avail);
+            let wrapped = wrap_label(label, avail);
+            let lines = &wrapped.lines;
+            let n = wrapped.line_count;
 
             let downward = sy <= ty;
             let block_top = if downward { sy + 1 } else { sy.saturating_sub(n) };
@@ -342,7 +344,9 @@ impl Connector {
             let center = if sx != tx { mid_x } else { x + len / 2 };
             // Wrap to corridor width minus 4 (left/right `---` padding).
             let avail = len.saturating_sub(4).max(2).min(w_limit);
-            let (lines, n, _) = wrap_label(label, avail);
+            let wrapped = wrap_label(label, avail);
+            let lines = &wrapped.lines;
+            let n = wrapped.line_count;
             let block_top = y.saturating_sub(n / 2);
 
             // Draw all label lines first.
@@ -398,7 +402,7 @@ impl Connector {
         }
         // Same-row horizontal fallback.
         let avail = w_limit.saturating_sub(mid_x).max(2).min(w_limit);
-        let (lines, _, _) = wrap_label(label, avail);
+        let lines = wrap_label(label, avail).lines;
         for (i, line) in lines.iter().enumerate() {
             let line_w = UnicodeWidthStr::width(line.as_str());
             let label_y = sy.saturating_sub(1 + i);

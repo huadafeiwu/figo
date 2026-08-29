@@ -15,7 +15,8 @@ use crate::error::{FigoError, Result};
 use crate::render::node::Node;
 use crate::render::surface::Surface;
 use crate::render::widget::{LayoutContext, MeasureContext, PaintContext, Rect, Widget};
-use crate::style::{BorderStyle, Charset, LineStyle};
+use crate::style::{BorderStyle, Charset, HAlign, LineStyle, VAlign};
+use crate::text::wrap_label;
 use unicode_width::UnicodeWidthStr;
 
 /// Builder for FSM state diagrams.
@@ -126,8 +127,7 @@ impl<'a> StateDiagram<'a> {
             } else {
                 total_w.saturating_sub(geom.from_cx + 2).max(2)
             };
-            let (_, _, max_lw) = crate::text::wrap_label(text, avail);
-            let lw = max_lw;
+            let lw = wrap_label(text, avail).max_width;
             let lx = base_x.saturating_sub(lw / 2);
             total_w = total_w.max(lx + lw);
         }
@@ -221,7 +221,7 @@ fn self_loop_label_height(
         let Some(layout) = id_to_layout.get(t.from.as_str()) else { continue };
         let loop_x = layout.rect.x + layout.rect.w + 1;
         let avail = canvas_width.saturating_sub(loop_x + 2).max(10);
-        let (_, n, _) = crate::text::wrap_label(label, avail);
+        let n = wrap_label(label, avail).line_count;
         // Label starts at rect.y and goes down n lines.
         let label_bottom = layout.rect.y + n;
         let extra = label_bottom.saturating_sub(layout.rect.bottom());
@@ -250,12 +250,12 @@ fn compute_label_rows(
     let mut labels: Vec<LabelInfo> = Vec::new();
 
     for (idx, t) in transitions.iter().enumerate() {
-        if t.from == t.to || t.label.is_none() {
+        let Some(text) = t.label.as_ref() else { continue };
+        if t.from == t.to {
             continue;
         }
         let Some(from) = id_to_layout.get(t.from.as_str()) else { continue };
         let Some(to) = id_to_layout.get(t.to.as_str()) else { continue };
-        let text = t.label.as_ref().unwrap();
 
         let from_cx = from.rect.x + from.rect.w / 2;
         let to_cx = to.rect.x + to.rect.w / 2;
@@ -334,138 +334,6 @@ fn shift_layouts(layouts: &mut [StateLayout], dy: usize) {
     }
 }
 
-/// Recenter each layer's states horizontally within `canvas_width`.
-/// Groups states by their y coordinate, finds the layer's content bounds,
-/// and shifts them so the content is centered.
-///
-/// For single-state layers, center the box on `canvas_width / 2` directly
-/// so that all single-column states share the same center column regardless
-/// of their individual widths (prevents integer-division misalignment
-/// between odd/even-width boxes in vertical transitions).
-#[allow(dead_code)]
-fn recenter_layouts(layouts: &mut [StateLayout], canvas_width: usize) {
-    use std::collections::HashMap;
-    let mut y_groups: HashMap<usize, Vec<usize>> = HashMap::new();
-    for (i, l) in layouts.iter().enumerate() {
-        y_groups.entry(l.rect.y).or_default().push(i);
-    }
-    let center = canvas_width / 2;
-    for indices in y_groups.values() {
-        if indices.len() == 1 {
-            let i = indices[0];
-            let w = layouts[i].rect.w;
-            layouts[i].rect.x = center.saturating_sub(w / 2);
-        } else {
-            let min_x = indices.iter().map(|&i| layouts[i].rect.x).min().unwrap_or(0);
-            let max_right = indices.iter().map(|&i| layouts[i].rect.right()).max().unwrap_or(0);
-            let content_w = max_right.saturating_sub(min_x);
-            let target_start = canvas_width.saturating_sub(content_w) / 2;
-            let shift = target_start as isize - min_x as isize;
-            if shift != 0 {
-                for &i in indices {
-                    layouts[i].rect.x = (layouts[i].rect.x as isize + shift).max(0) as usize;
-                }
-            }
-        }
-    }
-}
-
-/// Expand horizontal spacing so corridor between from and to states is wide
-/// enough to fit the transition label (with 2 cells of `---` on each side).
-/// Shifts the appropriate state in the direction that widens the corridor.
-/// Shifts are applied incrementally so each transition sees the updated
-/// layout from prior shifts (prevents corridor width miscalculation when
-/// one shift moves a state that is the `from` of a later transition).
-#[allow(dead_code)]
-fn expand_corridors_for_labels(
-    layouts: &mut [StateLayout],
-    transitions: &[Transition],
-    _params: &LayoutParams,
-    canvas_width: usize,
-) {
-    // Pre-resolve transition endpoints to indices so we don't hold an
-    // immutable borrow of `layouts` inside the mutable shift loop.
-    let resolved: Vec<(usize, usize, Option<String>)> = {
-        let id_to_idx: HashMap<&str, usize> =
-            layouts.iter().enumerate().map(|(i, l)| (l.id.as_str(), i)).collect();
-        transitions
-            .iter()
-            .filter_map(|t| {
-                if t.from == t.to {
-                    return None;
-                }
-                let from_idx = id_to_idx.get(t.from.as_str()).copied()?;
-                let to_idx = id_to_idx.get(t.to.as_str()).copied()?;
-                Some((from_idx, to_idx, t.label.clone()))
-            })
-            .collect()
-    };
-
-    for (from_idx, to_idx, label_opt) in resolved {
-        let Some(text) = label_opt.as_ref() else { continue };
-
-        // Recompute cx from the current (possibly already-shifted) layout.
-        let from_cx = layouts[from_idx].rect.x + layouts[from_idx].rect.w / 2;
-        let to_cx = layouts[to_idx].rect.x + layouts[to_idx].rect.w / 2;
-        if from_cx == to_cx {
-            continue;
-        }
-        // For cross-layer transitions, the corridor is the horizontal
-        // distance between the two center columns (V-H-V path).
-        // For same-layer transitions, the corridor is the gap between
-        // the two box edges (draw uses edge distance, not center distance).
-        // Use the same measurement the draw code uses to avoid mismatch.
-        let corridor_w = if layouts[from_idx].rect.y == layouts[to_idx].rect.y {
-            // Same layer: gap between box edges
-            let (left_rect, right_rect) = if from_cx < to_cx {
-                (&layouts[from_idx].rect, &layouts[to_idx].rect)
-            } else {
-                (&layouts[to_idx].rect, &layouts[from_idx].rect)
-            };
-            right_rect.x.saturating_sub(left_rect.x + left_rect.w)
-        } else {
-            // Cross-layer: center distance
-            from_cx.abs_diff(to_cx) + 1
-        };
-        // Use the full unwrapped label width to decide whether the corridor
-        // needs expanding. This ensures the corridor is widened enough to
-        // fit the label on a single line whenever possible.
-        let lw = text.width();
-        let needed = lw + 4;
-        if needed <= corridor_w {
-            continue;
-        }
-        // Cap the expansion by canvas_width so the layout doesn't exceed
-        // the user-specified width. Within that limit, expand enough to
-        // fit the full label on one line whenever possible.
-        let raw_extra = needed - corridor_w;
-        let extra = raw_extra.min(canvas_width);
-
-        // When `to` is to the right of `from`, shift `to` (and same-y peers
-        // to its right) rightward to widen the corridor.
-        // When `to` is to the LEFT of `from`, shift `from` (and same-y peers
-        // to its right) rightward instead — this widens the corridor without
-        // pushing any state leftward (which causes visual misalignment).
-        if to_cx > from_cx {
-            let y = layouts[to_idx].rect.y;
-            let x = layouts[to_idx].rect.x;
-            for layout in layouts.iter_mut() {
-                if layout.rect.y == y && layout.rect.x >= x {
-                    layout.rect.x += extra;
-                }
-            }
-        } else {
-            let y = layouts[from_idx].rect.y;
-            let x = layouts[from_idx].rect.x;
-            for layout in layouts.iter_mut() {
-                if layout.rect.y == y && layout.rect.x >= x {
-                    layout.rect.x += extra;
-                }
-            }
-        }
-    }
-}
-
 /// Compute how many extra rows each vertical gap needs to fit its labels.
 /// Returns a map from gap key to extra rows needed.
 fn compute_gap_expansion(
@@ -499,8 +367,7 @@ fn compute_gap_expansion(
         let num_lines = if let Some(text) = &t.label {
             let corridor_w = if from_cx != to_cx { from_cx.abs_diff(to_cx) + 1 } else { 80 };
             let avail = corridor_w.max(10);
-            let (_, n, _) = crate::text::wrap_label(text, avail);
-            n
+            wrap_label(text, avail).line_count
         } else {
             1
         };
@@ -617,7 +484,7 @@ fn draw_simple_state(
     let mut node = Node::new(ctx.charset)
         .border(BorderStyle::Rounded)
         .content(vec![layout.label.clone()])
-        .align(crate::style::HAlign::Center, crate::style::VAlign::Middle);
+        .align(HAlign::Center, VAlign::Middle);
     node.measure(measure_ctx);
     node.layout(layout_ctx, layout.rect);
     node.paint(ctx, surface);
@@ -780,9 +647,10 @@ fn draw_external_transition(
             surface.put_layered(right_edge, ly, arrow, Layer::ConnectorEnd);
 
             if let Some(text) = label {
-                use crate::text::wrap_label;
                 let avail = geom.avail;
-                let (lines, n, _) = wrap_label(text, avail);
+                let wrapped = wrap_label(text, avail);
+                let lines = &wrapped.lines;
+                let n = wrapped.line_count;
                 let mid_x = geom.base_x;
                 let block_top = ly.saturating_sub(n / 2);
 
@@ -910,13 +778,13 @@ fn draw_external_transition(
 
     // Label: use pre-computed geometry (single source of truth).
     if let Some(text) = label {
-        use crate::text::wrap_label;
-
         let corridor_w = geom.corridor_w;
         let embed_in_corridor = geom.embed;
         let avail = geom.avail;
 
-        let (lines, num_lines, _) = wrap_label(text, avail);
+        let wrapped = wrap_label(text, avail);
+        let lines = &wrapped.lines;
+        let num_lines = wrapped.line_count;
 
         // Same anchor build() sizes the canvas with (see TransGeom).
         let base_x = if row > 0 { geom.stacked_base_x } else { geom.base_x };
@@ -1149,7 +1017,7 @@ fn draw_self_loop(
     // canvas width.
     if let Some(text) = label {
         let avail = canvas_width.saturating_sub(loop_x + 2).max(10);
-        let (lines, _, _) = crate::text::wrap_label(text, avail);
+        let lines = wrap_label(text, avail).lines;
         for (i, line) in lines.iter().enumerate() {
             let lw = UnicodeWidthStr::width(line.as_str());
             let lx = (loop_x + 2).min(canvas_width.saturating_sub(lw));

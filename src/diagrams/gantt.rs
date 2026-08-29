@@ -5,6 +5,7 @@ use std::fmt;
 use crate::canvas::{Canvas, Layer};
 use crate::error::{FigoError, Result};
 use crate::style::{BorderStyle, Charset};
+use crate::text::wrap_label;
 
 /// Time unit for the Gantt scale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,7 +117,7 @@ impl GanttChart {
         let mut total_rows = 0usize;
         for (si, section) in self.sections.iter().enumerate() {
             if !section.label.is_empty() {
-                let (lines, _, _) = crate::text::wrap_label(&section.label, inner_label_w);
+                let lines = wrap_label(&section.label, inner_label_w).lines;
                 let sep = si > 0;
                 if sep {
                     total_rows += 1;
@@ -132,7 +133,7 @@ impl GanttChart {
             for task in &section.tasks {
                 let indent = if section.label.is_empty() { "" } else { "  " };
                 let avail = inner_label_w.saturating_sub(if indent.is_empty() { 0 } else { 2 });
-                let (lines, _, _) = crate::text::wrap_label(&task.name, avail);
+                let lines = wrap_label(&task.name, avail).lines;
                 let sep = false;
                 if sep {
                     total_rows += 1;

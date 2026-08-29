@@ -7,6 +7,7 @@ use std::fmt;
 
 use crate::error::{FigoError, Result};
 use crate::style::Charset;
+use crate::text::wrap_label;
 
 /// A node in a tree structure.
 #[derive(Debug, Clone)]
@@ -78,7 +79,7 @@ impl Tree {
         let mut lines: Vec<String> = Vec::new();
 
         if let Some(ref root_label) = self.root {
-            let (wrapped, _, _) = crate::text::wrap_label(root_label, self.width);
+            let wrapped = wrap_label(root_label, self.width).lines;
             for wl in &wrapped {
                 lines.push(wl.clone());
             }
@@ -104,7 +105,7 @@ impl Tree {
         // + marker + space.
         let used = prefix.chars().count() + marker.chars().count() + 1;
         let avail = self.width.saturating_sub(used).max(2);
-        let (wrapped, _, _) = crate::text::wrap_label(&node.label, avail);
+        let wrapped = wrap_label(&node.label, avail).lines;
 
         let first_line = wrapped.first().map(|s| s.as_str()).unwrap_or("");
         lines.push(format!("{prefix}{marker} {first_line}"));

@@ -18,6 +18,7 @@ use crate::canvas::{Canvas, Layer};
 use crate::error::{FigoError, Result};
 use crate::layout::{Anchor, Connector, Rect};
 use crate::style::{BorderStyle, Charset, LineStyle};
+use crate::text::wrap_label;
 use unicode_width::UnicodeWidthStr;
 
 /// Horizontal gap (in cells) between adjacent participant boxes.
@@ -143,12 +144,10 @@ impl<'a> SequenceDiagram<'a> {
                 let to_idx = name_to_idx.get(msg.to.as_str()).copied().unwrap_or(0);
                 if from_idx == to_idx {
                     let avail = (self.width / 2).clamp(10, 40);
-                    let (_, n, _) = crate::text::wrap_label(&msg.label, avail);
-                    n.max(1) + 3
+                    wrap_label(&msg.label, avail).line_count.max(1) + 3
                 } else {
                     let inner_w = inner_w_for(from_idx, to_idx).max(2);
-                    let (_, n, _) = crate::text::wrap_label(&msg.label, inner_w);
-                    n.max(1) + 2
+                    wrap_label(&msg.label, inner_w).line_count.max(1) + 2
                 }
             })
             .collect();
@@ -198,12 +197,10 @@ impl<'a> SequenceDiagram<'a> {
             let msg_h = msg_heights[mi];
             let label_lines = if from_idx == to_idx {
                 let avail = (self.width / 2).clamp(10, 40);
-                let (lines, _, _) = crate::text::wrap_label(&msg.label, avail);
-                lines
+                wrap_label(&msg.label, avail).lines
             } else {
                 let inner_w = inner_w_for(from_idx, to_idx).max(2);
-                let (lines, _, _) = crate::text::wrap_label(&msg.label, inner_w);
-                lines
+                wrap_label(&msg.label, inner_w).lines
             };
             let num_lines = label_lines.len().max(1);
             // Place the arrow below the label block so labels never overlap

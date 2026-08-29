@@ -11,6 +11,7 @@
 //! instead of re-deriving them — eliminating the multi-copy inconsistency
 //! that caused repeated alignment bugs.
 
+use crate::diagrams::state::layout::StateLayout;
 use crate::diagrams::state::types::Transition;
 use crate::render::widget::{Rect, Size};
 use std::collections::HashMap;
@@ -51,7 +52,7 @@ pub struct TransGeom {
 
 /// Result of layout: positioned states + pre-computed transition geometry.
 pub struct LayoutResult {
-    pub layouts: Vec<crate::diagrams::state::layout::StateLayout>,
+    pub layouts: Vec<StateLayout>,
     pub trans_geoms: Vec<TransGeom>,
 }
 
@@ -382,7 +383,7 @@ pub fn compute_column_gaps(
 /// This eliminates the multi-copy inconsistency where corridor width, embed
 /// decision, and label placement were independently recalculated in 4 places.
 pub fn compute_trans_geoms(
-    layouts: &[crate::diagrams::state::layout::StateLayout],
+    layouts: &[StateLayout],
     transitions: &[Transition],
     id_to_idx: &HashMap<&str, usize>,
     canvas_width: usize,
@@ -528,17 +529,18 @@ mod tests {
 
     #[test]
     fn compute_trans_geoms_cross_layer() {
+        use crate::diagrams::state::types::StateType;
         let layouts = vec![
-            crate::diagrams::state::layout::StateLayout {
+            StateLayout {
                 id: "a".into(),
                 label: "A".into(),
-                state_type: crate::diagrams::state::types::StateType::Simple,
+                state_type: StateType::Simple,
                 rect: Rect::new(33, 2, 14, 3),
             },
-            crate::diagrams::state::layout::StateLayout {
+            StateLayout {
                 id: "b".into(),
                 label: "B".into(),
-                state_type: crate::diagrams::state::types::StateType::Simple,
+                state_type: StateType::Simple,
                 rect: Rect::new(33, 8, 14, 3),
             },
         ];

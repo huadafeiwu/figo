@@ -10,6 +10,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::canvas::Canvas;
 use crate::error::Result;
 use crate::style::{BorderStyle, Charset, HAlign, Padding};
+use crate::text::wrap_label;
 
 /// Draw a table.
 pub fn draw_table(
@@ -309,7 +310,7 @@ impl fmt::Display for Table<'_> {
 /// Wraps long content to multiple lines. Each line is padded to exactly
 /// `width` so it never overflows into the next column.
 fn aligned_cell_lines(text: &str, width: usize, align: HAlign) -> Vec<String> {
-    let (lines, _, _) = crate::text::wrap_label(text, width.max(2));
+    let lines = wrap_label(text, width.max(2)).lines;
     lines
         .into_iter()
         .map(|line| {

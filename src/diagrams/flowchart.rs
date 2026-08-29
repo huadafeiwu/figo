@@ -14,6 +14,7 @@ use crate::error::{FigoError, Result};
 use crate::layout::connector::Connector;
 use crate::layout::geom::{Anchor, Rect};
 use crate::style::{BorderStyle, Charset, LineStyle};
+use crate::text::wrap_label;
 use unicode_width::UnicodeWidthStr;
 
 use super::flowchart_shape::{draw_diamond, node_dims};
@@ -272,7 +273,7 @@ impl Flowchart {
             }
             if let Some(label) = &conn.label {
                 let avail = (self.width / 2).clamp(10, 40);
-                let (_, n, _) = crate::text::wrap_label(label, avail);
+                let n = wrap_label(label, avail).line_count;
                 let from_layer = id_to_layer.get(&from_idx).copied().unwrap_or(0);
                 let to_layer = id_to_layer.get(&to_idx).copied().unwrap_or(0);
                 let gap = to_layer.min(from_layer) + 1;
@@ -441,7 +442,7 @@ impl Flowchart {
         }
         // Centered label. Wrap to multiple lines if it doesn't fit the box.
         let inner_w = pos.rect.w.saturating_sub(2).max(2);
-        let (label_lines, _, _) = crate::text::wrap_label(&pos.node.label, inner_w);
+        let label_lines = wrap_label(&pos.node.label, inner_w).lines;
         let num_lines = label_lines.len().max(1);
         let content_h = pos.rect.h.saturating_sub(2);
         let start_y = pos.rect.y + 1 + content_h.saturating_sub(num_lines) / 2;
@@ -473,8 +474,7 @@ impl Flowchart {
                     .map(|l| {
                         // Use the wrapped width (bounded by self.width) not
                         // the full unwrapped label width.
-                        let (_, _, max_lw) = crate::text::wrap_label(l, self.width);
-                        max_lw
+                        wrap_label(l, self.width).max_width
                     })
                     .unwrap_or(0)
             })
