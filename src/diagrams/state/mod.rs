@@ -236,4 +236,188 @@ mod tests {
             assert!(out.contains(ch), "label char '{ch}' missing:\n{out}");
         }
     }
+
+    #[test]
+    fn test_trans_geom_matches_layout() {
+        // Multi-layer state graph similar to Netfilter structure:
+        // fork + cross-layer + independent path. This exercises the
+        // layout_states → apply_gap_expansion (sorts by y) →
+        // compute_trans_geoms (indexes by declaration order) chain.
+        // If layouts are not re-sorted to declaration order before
+        // compute_trans_geoms, the geom cx values will be wrong.
+        use crate::diagrams::state::layout::{LayoutParams, layout_states};
+        use crate::diagrams::state::sugiyama;
+        use std::collections::HashMap;
+
+        let states = vec![
+            StateNode {
+                id: "pre".into(),
+                label: "PRE_ROUTING".into(),
+                state_type: StateType::Simple,
+            },
+            StateNode {
+                id: "local".into(),
+                label: "LOCAL_IN".into(),
+                state_type: StateType::Simple,
+            },
+            StateNode { id: "fwd".into(), label: "FORWARD".into(), state_type: StateType::Simple },
+            StateNode {
+                id: "post".into(),
+                label: "POST_ROUTING".into(),
+                state_type: StateType::Simple,
+            },
+            StateNode {
+                id: "out".into(),
+                label: "LOCAL_OUT".into(),
+                state_type: StateType::Simple,
+            },
+            StateNode {
+                id: "post2".into(),
+                label: "POST_ROUTING_OUT".into(),
+                state_type: StateType::Simple,
+            },
+        ];
+        let transitions = vec![
+            Transition {
+                from: "pre".into(),
+                to: "local".into(),
+                label: Some("local_delivery".into()),
+            },
+            Transition { from: "pre".into(), to: "fwd".into(), label: Some("forward".into()) },
+            Transition {
+                from: "fwd".into(),
+                to: "post".into(),
+                label: Some("post_forward".into()),
+            },
+            Transition {
+                from: "out".into(),
+                to: "post2".into(),
+                label: Some("output_post".into()),
+            },
+        ];
+        let params = LayoutParams::default();
+        let layouts = layout_states(&states, &transitions, Some("pre"), 120, &params);
+
+        // Build id_to_idx matching self.states declaration order.
+        let id_to_idx: HashMap<&str, usize> =
+            states.iter().enumerate().map(|(i, s)| (s.id.as_str(), i)).collect();
+
+        let geoms = sugiyama::compute_trans_geoms(&layouts, &transitions, &id_to_idx, 120);
+
+        // Verify each transition's geom cx matches the actual layout rect.
+        for (i, t) in transitions.iter().enumerate() {
+            let from_i = id_to_idx[t.from.as_str()];
+            let to_i = id_to_idx[t.to.as_str()];
+            let expected_from_cx = layouts[from_i].rect.x + layouts[from_i].rect.w / 2;
+            let expected_to_cx = layouts[to_i].rect.x + layouts[to_i].rect.w / 2;
+            assert_eq!(
+                geoms[i].from_cx, expected_from_cx,
+                "transition {}→{}: geom.from_cx={} but layout says cx={}",
+                t.from, t.to, geoms[i].from_cx, expected_from_cx
+            );
+            assert_eq!(
+                geoms[i].to_cx, expected_to_cx,
+                "transition {}→{}: geom.to_cx={} but layout says cx={}",
+                t.from, t.to, geoms[i].to_cx, expected_to_cx
+            );
+        }
+    }
+
+    #[test]
+    fn test_label_not_unnecessarily_wrapped() {
+        // Verify that labels are not wrapped when the corridor is wide
+        // enough. This catches bugs where compute_column_gaps fails to
+        // widen the corridor (e.g., due to x-vs-cx mismatch or canvas cap).
+        use crate::diagrams::state::layout::{LayoutParams, layout_states};
+        use crate::diagrams::state::sugiyama;
+        use std::collections::HashMap;
+        use unicode_width::UnicodeWidthStr;
+
+        let states = vec![
+            StateNode {
+                id: "pre".into(),
+                label: "PRE_ROUTING".into(),
+                state_type: StateType::Simple,
+            },
+            StateNode {
+                id: "local".into(),
+                label: "LOCAL_IN".into(),
+                state_type: StateType::Simple,
+            },
+            StateNode { id: "fwd".into(), label: "FORWARD".into(), state_type: StateType::Simple },
+            StateNode {
+                id: "post".into(),
+                label: "POST_ROUTING".into(),
+                state_type: StateType::Simple,
+            },
+            StateNode {
+                id: "out".into(),
+                label: "LOCAL_OUT".into(),
+                state_type: StateType::Simple,
+            },
+            StateNode {
+                id: "post2".into(),
+                label: "POST_ROUTING_OUT".into(),
+                state_type: StateType::Simple,
+            },
+        ];
+        let transitions = vec![
+            Transition {
+                from: "pre".into(),
+                to: "local".into(),
+                label: Some("local_delivery".into()),
+            },
+            Transition { from: "pre".into(), to: "fwd".into(), label: Some("forward".into()) },
+            Transition {
+                from: "fwd".into(),
+                to: "post".into(),
+                label: Some("post_forward".into()),
+            },
+            Transition {
+                from: "out".into(),
+                to: "post2".into(),
+                label: Some("output_post".into()),
+            },
+        ];
+        let params = LayoutParams::default();
+        let layouts = layout_states(&states, &transitions, Some("pre"), 120, &params);
+
+        let id_to_idx: HashMap<&str, usize> =
+            states.iter().enumerate().map(|(i, s)| (s.id.as_str(), i)).collect();
+
+        let geoms = sugiyama::compute_trans_geoms(&layouts, &transitions, &id_to_idx, 120);
+
+        for (i, t) in transitions.iter().enumerate() {
+            let Some(label) = &t.label else { continue };
+            let label_w = UnicodeWidthStr::width(label.as_str());
+            let geom = &geoms[i];
+
+            // Build the full output to check if the label appears unsplit.
+            let out = StateDiagram::new(120, Charset::Ascii)
+                .add_state(states[0].clone())
+                .add_state(states[1].clone())
+                .add_state(states[2].clone())
+                .add_state(states[3].clone())
+                .add_state(states[4].clone())
+                .add_state(states[5].clone())
+                .initial("pre")
+                .add_transition("pre", "local", Some(label))
+                .build()
+                .unwrap();
+
+            // The label should appear as a single unbroken line in the output.
+            // If it's wrapped, the label text won't appear as a contiguous string.
+            assert!(
+                out.contains(label.as_str()),
+                "label '{}' should appear unsplit in output but was wrapped.\n\
+                 geom: corridor_w={}, embed={}, avail={}, label_w={}\n{}",
+                label,
+                geom.corridor_w,
+                geom.embed,
+                geom.avail,
+                label_w,
+                out
+            );
+        }
+    }
 }
