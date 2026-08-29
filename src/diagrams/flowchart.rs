@@ -253,45 +253,23 @@ impl Flowchart {
             }
         }
 
-        // Pre-compute the maximum number of wrapped label lines for each
-        // layer gap, so the vertical stride can grow to fit them.
+        // Pass 1: x positions per layer. Single-node layers align to the
+        // global canvas center so vertical connectors stay in one column;
+        // multi-node layers center their content. Nodes wider than the
+        // canvas (e.g. diamonds, which never shrink to wrap a label) start
+        // at the left edge and the canvas grows around them.
         let id_to_idx: HashMap<&str, usize> =
             self.nodes.iter().enumerate().map(|(i, n)| (n.id.as_str(), i)).collect();
         let id_to_layer: HashMap<usize, usize> =
             self.nodes.iter().enumerate().map(|(i, _)| (i, layers[i])).collect();
-        let mut max_label_lines_per_gap: HashMap<usize, usize> = HashMap::new();
-        for conn in &self.connections {
-            let (Some(&from_idx), Some(&to_idx)) =
-                (id_to_idx.get(conn.from.as_str()), id_to_idx.get(conn.to.as_str()))
-            else {
-                continue;
-            };
-            let is_back = id_to_layer.get(&from_idx).copied().unwrap_or(0)
-                >= id_to_layer.get(&to_idx).copied().unwrap_or(0);
-            if is_back {
-                continue;
-            }
-            if let Some(label) = &conn.label {
-                let avail = (self.width / 2).clamp(10, 40);
-                let n = wrap_label(label, avail).line_count;
-                let from_layer = id_to_layer.get(&from_idx).copied().unwrap_or(0);
-                let to_layer = id_to_layer.get(&to_idx).copied().unwrap_or(0);
-                let gap = to_layer.min(from_layer) + 1;
-                max_label_lines_per_gap.entry(gap).and_modify(|v| *v = (*v).max(n)).or_insert(n);
-            }
-        }
-
-        let mut y = 1usize;
-        let mut out: Vec<Option<PositionedNode>> = vec![None; self.nodes.len()];
-
-        for (layer_i, layer_indices) in layer_positions.iter().enumerate() {
-            // Calculate gap_x: default 6, but expand if labels need more.
+        let mut xs: Vec<usize> = vec![0; self.nodes.len()];
+        for layer_indices in layer_positions.iter() {
+            // gap_x: default 6, expanded when a same-layer connection
+            // label needs the extra corridor width.
             let mut gap_x = 6usize;
-            // Check connections within this layer for label width.
             for i in 0..layer_indices.len().saturating_sub(1) {
                 let left_idx = layer_indices[i];
                 let right_idx = layer_indices[i + 1];
-                // Find connections between these two nodes.
                 for conn in &self.connections {
                     let (Some(&from_i), Some(&to_i)) =
                         (id_to_idx.get(conn.from.as_str()), id_to_idx.get(conn.to.as_str()))
@@ -312,27 +290,66 @@ impl Flowchart {
                     }
                 }
             }
-
             let total_w: usize = layer_indices.iter().map(|&idx| dims[idx].0).sum::<usize>()
                 + layer_indices.len().saturating_sub(1) * gap_x;
-            // Single-node layers align to global canvas center so that
-            // vertical connectors between layers stay in the same column.
             let start_x = if layer_indices.len() == 1 {
-                self.width / 2 - (dims[layer_indices[0]].0 / 2)
+                (self.width / 2).saturating_sub(dims[layer_indices[0]].0 / 2)
             } else {
                 self.width.saturating_sub(total_w) / 2
             };
             let mut x = start_x;
+            for &idx in layer_indices {
+                xs[idx] = x;
+                x += dims[idx].0 + gap_x;
+            }
+        }
+
+        // Pass 2: wrapped label line counts per layer gap, using the SAME
+        // avail formulas the draw side (Connector::draw_label) derives
+        // from the routed geometry: the V-H-V corridor spans both leg
+        // columns inclusive, and pure vertical connectors bound the label
+        // by the canvas. Estimating with any other width under-sizes the
+        // stride, and the drawn block then gets clamped into the corridor
+        // — silently losing label lines.
+        let mut max_label_lines_per_gap: HashMap<usize, usize> = HashMap::new();
+        for conn in &self.connections {
+            let (Some(&from_idx), Some(&to_idx)) =
+                (id_to_idx.get(conn.from.as_str()), id_to_idx.get(conn.to.as_str()))
+            else {
+                continue;
+            };
+            let from_layer = id_to_layer.get(&from_idx).copied().unwrap_or(0);
+            let to_layer = id_to_layer.get(&to_idx).copied().unwrap_or(0);
+            if from_layer >= to_layer {
+                continue; // back-edge / same-layer: side route, no stride need
+            }
+            let Some(label) = &conn.label else { continue };
+            let from_cx = xs[from_idx] + dims[from_idx].0 / 2;
+            let to_cx = xs[to_idx] + dims[to_idx].0 / 2;
+            let avail = if from_cx != to_cx {
+                (from_cx.abs_diff(to_cx) + 1).saturating_sub(4).max(2).min(self.width)
+            } else {
+                self.width.saturating_sub(from_cx + 2).max(2).min(self.width)
+            };
+            let n = wrap_label(label, avail).line_count;
+            // The stride below a layer must fit every label block whose
+            // corridor leaves that layer.
+            let gap = from_layer;
+            max_label_lines_per_gap.entry(gap).and_modify(|v| *v = (*v).max(n)).or_insert(n);
+        }
+
+        // Pass 3: y positions. The stride after each layer grows to fit
+        // the tallest label block crossing that gap.
+        let mut y = 1usize;
+        let mut out: Vec<Option<PositionedNode>> = vec![None; self.nodes.len()];
+        for (layer_i, layer_indices) in layer_positions.iter().enumerate() {
             let max_h = layer_indices.iter().map(|&idx| dims[idx].1).max().unwrap_or(0);
             for &idx in layer_indices {
-                let (w, h) = dims[idx];
                 out[idx] = Some(PositionedNode {
                     node: self.nodes[idx].clone(),
-                    rect: Rect::new(x, y, w, h),
+                    rect: Rect::new(xs[idx], y, dims[idx].0, dims[idx].1),
                 });
-                x += w + gap_x;
             }
-            // Grow the stride if labels in this gap need more rows.
             let label_lines = max_label_lines_per_gap.get(&layer_i).copied().unwrap_or(0).max(1);
             let stride = AUTO_STRIDE_ROWS.max(label_lines + 2);
             y += max_h + stride;
@@ -738,6 +755,58 @@ mod tests {
             .connect("a", "b", Some(long_label));
         let out = fc.build().unwrap();
         for ch in long_label.chars() {
+            assert!(out.contains(ch), "label char '{ch}' missing:\n{out}");
+        }
+    }
+
+    #[test]
+    fn test_diamond_wider_than_canvas_renders() {
+        // Regression: a diamond never shrinks to wrap its label, so a long
+        // label makes it wider than the canvas. Centering it used to
+        // underflow and panic; now it renders with the canvas grown
+        // around it.
+        let long_label: String = "a".repeat(59);
+        let fc = Flowchart::new(40, Charset::Ascii).add_node(FlowNode {
+            id: "d".into(),
+            label: long_label.clone(),
+            shape: NodeShape::Diamond,
+            position: None,
+        });
+        let out = fc.build().unwrap();
+        assert_eq!(out.matches('a').count(), 59, "label chars lost:\n{out}");
+    }
+
+    #[test]
+    fn test_narrow_corridor_label_lines_not_lost() {
+        // Regression: when a connection's corridor is narrow, its label
+        // wraps to several lines. The stride used to be estimated with a
+        // wider wrap width than the draw side used, so the drawn block
+        // overflowed its reserved gap and got clamped row-by-row —
+        // collapsing lines onto one row where they overwrote each other.
+        let label = "abcdefghijklmno";
+        let fc = Flowchart::new(60, Charset::Ascii)
+            .add_node(FlowNode {
+                id: "a".into(),
+                label: "A".into(),
+                shape: NodeShape::Rounded,
+                position: None,
+            })
+            .add_node(FlowNode {
+                id: "b".into(),
+                label: "B".into(),
+                shape: NodeShape::Rounded,
+                position: None,
+            })
+            .add_node(FlowNode {
+                id: "c".into(),
+                label: "C".into(),
+                shape: NodeShape::Rounded,
+                position: None,
+            })
+            .connect("a", "b", None)
+            .connect("a", "c", Some(label));
+        let out = fc.build().unwrap();
+        for ch in label.chars() {
             assert!(out.contains(ch), "label char '{ch}' missing:\n{out}");
         }
     }

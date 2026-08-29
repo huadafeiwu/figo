@@ -347,7 +347,14 @@ impl Connector {
             let wrapped = wrap_label(label, avail);
             let lines = &wrapped.lines;
             let n = wrapped.line_count;
-            let block_top = y.saturating_sub(n / 2);
+            // Keep the whole label block inside the connector's vertical
+            // span instead of clamping each line. Centering on the
+            // corridor row can start the block above the source anchor;
+            // the old per-line clamp then mapped two lines onto the same
+            // row, where one silently overwrote the other and label
+            // characters were lost. Shifting the block keeps every line.
+            let block_top =
+                y.saturating_sub(n / 2).min(ty.saturating_sub(n.saturating_sub(1))).max(sy);
 
             // Draw all label lines first.
             let mut label_positions: Vec<(usize, usize, usize)> = Vec::new();
@@ -355,7 +362,7 @@ impl Connector {
                 let line_w = UnicodeWidthStr::width(line.as_str());
                 let base_x = center.saturating_sub(line_w / 2).max(x);
                 let lx = base_x.min((x + len).saturating_sub(line_w)).max(x);
-                let label_y = (block_top + i).max(sy).min(ty);
+                let label_y = block_top + i;
                 canvas.put_str_layered(lx, label_y, line, Layer::Label, None);
                 label_positions.push((lx, line_w, label_y));
             }
