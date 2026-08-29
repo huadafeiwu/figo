@@ -201,16 +201,20 @@ impl Arrow {
         };
 
         let label = self.label.as_deref().unwrap_or("");
-        // +1 so a label placed at x=1 (right of the vertical line at x=0)
-        // doesn't have its last character clipped at the canvas edge.
-        // Wrap to the user-specified width (hard upper limit).
-        let max_label_w = self.width.saturating_sub(1).max(10);
+        // The vertical line owns column 0 and the label sits to its
+        // right, so the label wraps to the remaining width. wrap_label
+        // enforces its own minimum width; the canvas then grows to that
+        // structural minimum instead of clipping label characters when
+        // the user width is narrower than a label can wrap.
+        let max_label_w = self.width.saturating_sub(1);
         let wrapped =
             if label.is_empty() { WrappedLabel::default() } else { wrap_label(label, max_label_w) };
         let label_lines = wrapped.lines;
         let max_line_w = wrapped.max_width;
-        let width = if label.is_empty() { 1usize } else { (max_line_w + 1).min(self.width) };
-        let height = self.length + 1;
+        let width = if label.is_empty() { 1usize } else { max_line_w + 1 };
+        // The arrow spans length+1 rows; a taller label block extends the
+        // canvas instead of having its rows silently dropped.
+        let height = (self.length + 1).max(label_lines.len());
 
         let mut canvas = Canvas::new(width, height);
         if self.direction == "up" {
@@ -289,6 +293,25 @@ mod tests {
     fn test_vertical_arrow_label_not_clipped() {
         let out = draw_arrow("down", 3, LineStyle::Simple, Charset::Ascii, Some("X")).unwrap();
         assert!(out.contains("X"), "single-char vertical label must be visible:\n{out}");
+    }
+
+    #[test]
+    fn test_vertical_narrow_width_label_not_lost() {
+        // Regression: the wrap width used to be forced to at least 10
+        // columns even when the canvas was narrower, so lines wider than
+        // the canvas were silently clipped at the right edge.
+        let label: String = "a".repeat(30);
+        let out = draw_arrow("down", 3, LineStyle::Simple, Charset::Ascii, Some(&label)).unwrap();
+        assert_eq!(out.matches('a').count(), 30, "label chars lost:\n{out}");
+    }
+
+    #[test]
+    fn test_vertical_tall_label_not_dropped() {
+        // Regression: the canvas height used to be length+1 regardless of
+        // the label block, so label rows below the arrow were dropped.
+        let label: String = "b".repeat(60);
+        let out = draw_arrow("down", 1, LineStyle::Simple, Charset::Ascii, Some(&label)).unwrap();
+        assert_eq!(out.matches('b').count(), 60, "label rows lost:\n{out}");
     }
 
     #[test]
