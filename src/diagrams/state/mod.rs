@@ -452,4 +452,38 @@ mod tests {
         assert!(out.contains("back_label_alpha_return"), "full label lost or wrapped:\n{out}");
         assert!(out.contains("back_label_beta_return"), "full label lost or wrapped:\n{out}");
     }
+
+    #[test]
+    fn test_aligned_label_avoids_sibling_junction() {
+        // The left branch is an aligned edge (same column) whose row-0
+        // label used to sit centered on the shared leg column, covering
+        // the right branch's corridor start and its `+` junction (Label
+        // layer > Connector layer, the write was dropped). The label must
+        // shift beside the leg so both corridor junctions render.
+        let out = StateDiagram::new(100, Charset::Ascii)
+            .add_state(StateNode {
+                id: "a".into(),
+                label: "TOP".into(),
+                state_type: StateType::Simple,
+            })
+            .add_state(StateNode {
+                id: "b".into(),
+                label: "LEFT".into(),
+                state_type: StateType::Simple,
+            })
+            .add_state(StateNode {
+                id: "c".into(),
+                label: "RIGHT".into(),
+                state_type: StateType::Simple,
+            })
+            .initial("a")
+            .add_transition("a", "b", Some("left_branch_label"))
+            .add_transition("a", "c", Some("right_branch_label"))
+            .build()
+            .unwrap();
+        let row = out.lines().find(|l| l.contains("left_branch_label")).expect("label missing");
+        let junctions = row.matches('+').count();
+        assert!(junctions >= 2, "both corridor junctions must render on the corridor row:\n{row}");
+        insta::assert_snapshot!(out);
+    }
 }

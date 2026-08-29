@@ -665,6 +665,29 @@ fn draw_transitions(
     layouts: &[StateLayout],
     trans_geoms: &[sugiyama::TransGeom],
 ) {
+    // Junction columns (corridor endpoints) per vertical gap. A label
+    // drawn over a sibling transition's junction cell hides its `+` and
+    // corridor start (Label layer > Connector layer, the write is
+    // dropped), so label placement steers clear of these columns on the
+    // corridor row.
+    let mut gap_junctions: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+    for (idx, t) in transitions.iter().enumerate() {
+        if t.from == t.to {
+            continue;
+        }
+        let (Some(from), Some(to)) = (id_to_layout.get(&t.from), id_to_layout.get(&t.to)) else {
+            continue;
+        };
+        let geom = &trans_geoms[idx];
+        if geom.corridor_w == 0 {
+            continue; // aligned edge: no corridor, no junctions
+        }
+        let key = gap_key_of(from.rect, to.rect);
+        let entry = gap_junctions.entry(key).or_default();
+        entry.push(geom.left_x);
+        entry.push(geom.right_x);
+    }
+
     for (idx, t) in transitions.iter().enumerate() {
         let Some(from) = id_to_layout.get(&t.from) else { continue };
         let Some(to) = id_to_layout.get(&t.to) else { continue };
@@ -673,6 +696,11 @@ fn draw_transitions(
             draw_self_loop(surface, from.rect, t.label.as_deref(), ctx, canvas_width);
             continue;
         }
+
+        let mut avoid_cols: Vec<usize> =
+            gap_junctions.get(&gap_key_of(from.rect, to.rect)).cloned().unwrap_or_default();
+        avoid_cols.sort_unstable();
+        avoid_cols.dedup();
 
         let row = label_rows.get(&idx).copied().unwrap_or(0);
         let geom = &trans_geoms[idx];
@@ -686,8 +714,15 @@ fn draw_transitions(
             canvas_width,
             layouts,
             geom,
+            &avoid_cols,
         );
     }
+}
+
+/// Vertical gap key of a transition: the (upper, lower) y pair of its
+/// endpoint boxes. Transitions sharing a gap share a corridor row.
+fn gap_key_of(from: Rect, to: Rect) -> (usize, usize) {
+    if from.y < to.y { (from.y, to.y) } else { (to.y, from.y) }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -701,6 +736,7 @@ fn draw_external_transition(
     canvas_width: usize,
     all_layouts: &[StateLayout],
     geom: &sugiyama::TransGeom,
+    avoid_junction_cols: &[usize],
 ) {
     let glyphs = BorderStyle::Single.glyphs(ctx.charset);
     let from_cx = geom.from_cx;
@@ -902,6 +938,26 @@ fn draw_external_transition(
                 label_x = label_x.max(left_x).min((right_x + 1).saturating_sub(lw));
             }
             let label_y = block_top + i;
+            // Root cause 3 cleanup: a label covering a sibling's junction
+            // cell hides its `+` and corridor start (Label > Connector,
+            // the write is dropped). Shift the corridor-row line off any
+            // same-gap sibling junction column — toward the side that is
+            // closer to the current position.
+            if label_y == effective_route_y && !avoid_junction_cols.is_empty() {
+                for _ in 0..=avoid_junction_cols.len() {
+                    let Some(&c) =
+                        avoid_junction_cols.iter().find(|&&c| label_x <= c && c < label_x + lw)
+                    else {
+                        break;
+                    };
+                    let new_x = if c >= label_x + lw / 2 { c.saturating_sub(lw) } else { c + 1 };
+                    if new_x == label_x {
+                        break;
+                    }
+                    label_x = new_x;
+                }
+                label_x = label_x.min(canvas_width.saturating_sub(lw));
+            }
             // Scene D: don't let label cover any box.
             label_x = avoid_box_x(label_x, lw, label_y, from, to, all_layouts, canvas_width);
             surface.put_str_layered(label_x, label_y, line, Layer::Label);
