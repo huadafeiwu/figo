@@ -134,8 +134,11 @@ impl Arrow {
             self.length + right_head_width
         };
 
-        // Wrap long labels to the user-specified width (hard upper limit).
-        let max_label_w = self.width.min(total_width.max(10));
+        // The label sits above the arrow and spans the whole canvas (the
+        // arrow body, or the user width when wider). Wrapping to anything
+        // narrower over-wraps — a 60-column label on a 40-column canvas
+        // used to fold into six ~10-column lines.
+        let max_label_w = self.width.max(total_width);
         let wrapped =
             if label.is_empty() { WrappedLabel::default() } else { wrap_label(label, max_label_w) };
         let label_lines = wrapped.lines;

@@ -47,6 +47,11 @@ use transition::{DrawStage, draw_transitions};
 /// Builder for FSM state diagrams.
 pub struct StateDiagram<'a> {
     width: usize,
+    /// Display budget for label-driven growth: labels whose corridor
+    /// cannot widen (aligned edges) wrap within this bound to the right
+    /// of their leg. Defaults to `width` so library renders stay
+    /// deterministic; the CLI raises it to the detected terminal width.
+    label_budget: usize,
     charset: Charset,
     states: Vec<StateNode>,
     initial: Option<&'a str>,
@@ -59,12 +64,19 @@ impl<'a> StateDiagram<'a> {
     pub fn new(width: usize, charset: Charset) -> Self {
         Self {
             width,
+            label_budget: width,
             charset,
             states: Vec::new(),
             initial: None,
             transitions: Vec::new(),
             color: false,
         }
+    }
+
+    /// Set the display budget for label wrapping and label-driven growth.
+    pub fn label_budget(mut self, budget: usize) -> Self {
+        self.label_budget = budget;
+        self
     }
 
     /// Add a state.
@@ -119,8 +131,12 @@ impl<'a> StateDiagram<'a> {
         // compute_trans_geoms indexes against.
         let id_to_idx: HashMap<&str, usize> =
             self.states.iter().enumerate().map(|(i, s)| (s.id.as_str(), i)).collect();
-        let trans_geoms =
-            sugiyama::compute_trans_geoms(&layouts, &self.transitions, &id_to_idx, self.width);
+        let trans_geoms = sugiyama::compute_trans_geoms(
+            &layouts,
+            &self.transitions,
+            &id_to_idx,
+            self.label_budget,
+        );
 
         let label_rows = compute_label_rows(&self.transitions, &layouts);
 

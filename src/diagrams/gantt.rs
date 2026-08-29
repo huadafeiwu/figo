@@ -6,6 +6,7 @@ use crate::canvas::{Canvas, Layer};
 use crate::error::{FigoError, Result};
 use crate::style::{BorderStyle, Charset};
 use crate::text::wrap_label;
+use unicode_width::UnicodeWidthStr;
 
 /// Time unit for the Gantt scale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,7 +95,26 @@ impl GanttChart {
         }
 
         let glyphs = BorderStyle::Single.glyphs(self.charset);
-        let label_width = 20usize.min(self.width / 4).max(10);
+        // Label column: wide enough to hold the longest entry name on one
+        // line, floored at the proportional default (keeps short-name
+        // charts unchanged) and capped so the chart keeps at least one
+        // column per time unit — names wrap only past that cap.
+        let max_entry_w = self
+            .sections
+            .iter()
+            .flat_map(|s| {
+                let section_w = if s.label.is_empty() { 0 } else { s.label.width() };
+                // +4 covers the full width chain to a task's wrap width
+                // (label column margin plus the 2-cell section indent).
+                let task_w = s.tasks.iter().map(|t| t.name.width() + 4).max().unwrap_or(0);
+                [section_w, task_w]
+            })
+            .max()
+            .unwrap_or(0);
+        let label_default = 20usize.min(self.width / 4).max(10);
+        let chart_min_cols = self.total_units.max(1);
+        let label_max = self.width.saturating_sub(chart_min_cols + 2);
+        let label_width = max_entry_w.max(label_default).min(label_max);
         let chart_width = self.width.saturating_sub(label_width + 2);
         let col_per_unit = chart_width / self.total_units.max(1);
         let chart_width = col_per_unit * self.total_units;
