@@ -16,6 +16,7 @@ mod avoidance;
 mod gap_expansion;
 mod label;
 mod label_rows;
+mod riding_plan;
 mod same_layer;
 mod self_loop;
 mod sizing;
@@ -140,33 +141,17 @@ impl<'a> StateDiagram<'a> {
 
         let label_rows = compute_label_rows(&self.transitions, &layouts);
 
-        // Compute per-gap max row and expand gaps accordingly.
-        let gap_extra = compute_gap_expansion(
-            &self.transitions,
-            &layouts,
-            &label_rows,
-            &trans_geoms,
-            self.label_budget,
-        );
-        apply_gap_expansion(&mut layouts, &gap_extra, &params);
-
-        // Shift states down for top margin (room for labels above topmost state).
-        let max_label_row = label_rows.values().copied().max().unwrap_or(0);
-        if max_label_row > 0 {
-            label_rows::shift_layouts(&mut layouts, max_label_row + 1);
-        }
-
-        let id_to_layout = build_id_map(&layouts);
-
-        // apply_gap_expansion sorts by y; restore declaration order so
-        // layouts[i] == states[i]. The geoms above are unaffected.
-        layouts.sort_by_key(|l| id_to_idx[l.id.as_str()]);
-
+        // Canvas width depends only on x coordinates and label widths —
+        // the gap expansion below shifts y only — so compute it once,
+        // BEFORE the expansion, and feed the same value to the
+        // expansion budget and the draw pass. Both sides' wrap ladders
+        // then read one width (previously the budget used `label_budget`
+        // while the draw pass used the canvas width; a narrower canvas
+        // made their fallback spans — and hence line counts — diverge).
+        // Uses the pre-computed geometry (single source of truth)
+        // instead of independently recalculating corridor_w / embed /
+        // avail.
         let mut total_w = compute_canvas_width(&layouts, &params).max(self.width);
-
-        // Ensure canvas is wide enough for all transition labels.
-        // Uses the pre-computed geometry (single source of truth) instead
-        // of independently recalculating corridor_w / embed / avail.
         for (idx, t) in self.transitions.iter().enumerate() {
             let Some(text) = t.label.as_ref() else { continue };
             let geom = &trans_geoms[idx];
@@ -185,6 +170,24 @@ impl<'a> StateDiagram<'a> {
             let lx = base_x.saturating_sub(lw / 2);
             total_w = total_w.max(lx + lw);
         }
+
+        // Compute per-gap max row and expand gaps accordingly. The width
+        // passed here is the same `total_w` the draw pass sees.
+        let gap_extra =
+            compute_gap_expansion(&self.transitions, &layouts, &label_rows, &trans_geoms, total_w);
+        apply_gap_expansion(&mut layouts, &gap_extra, &params);
+
+        // Shift states down for top margin (room for labels above topmost state).
+        let max_label_row = label_rows.values().copied().max().unwrap_or(0);
+        if max_label_row > 0 {
+            label_rows::shift_layouts(&mut layouts, max_label_row + 1);
+        }
+
+        let id_to_layout = build_id_map(&layouts);
+
+        // apply_gap_expansion sorts by y; restore declaration order so
+        // layouts[i] == states[i]. The geoms above are unaffected.
+        layouts.sort_by_key(|l| id_to_idx[l.id.as_str()]);
 
         let total_h = compute_canvas_height(&layouts, &params, max_label_row)
             + self_loop_label_height(&self.transitions, &layouts, total_w);

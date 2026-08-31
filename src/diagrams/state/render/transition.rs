@@ -20,6 +20,7 @@ use super::avoidance::reroute_leg_around_boxes;
 use super::gap_expansion::{GapLabelBudget, gap_label_heights};
 use super::label::{RouteGeometry, draw_transition_label};
 use super::label_rows::gap_key_of;
+use super::riding_plan::{RiderPlan, plan_gap_riders};
 use super::same_layer::draw_same_layer_transition;
 use super::self_loop::draw_self_loop;
 
@@ -54,6 +55,12 @@ pub(super) struct TransitionCtx<'a> {
     /// above/below it are what a riding label's exclusive leg segment
     /// must clear (see `own_leg_placement`).
     pub gap_row0_lines: usize,
+    /// Riding plan for this transition's label, when it rides its leg
+    /// (aligned edge with corridor siblings in its gap); `None` for
+    /// default placement. The plan is the single source shared with the
+    /// gap expansion — same wrap width, center column, and cluster
+    /// stacking on both sides.
+    pub riding: Option<&'a RiderPlan>,
 }
 
 /// Draw all transitions (self-loops, same-layer arrows, V-H-V routes).
@@ -95,6 +102,19 @@ pub(super) fn draw_transitions(stage: &mut DrawStage<'_>) {
         stage.trans_geoms,
         stage.canvas_width,
     );
+
+    // Riding plans (single source with the gap expansion above): which
+    // labels ride their leg, at what wrap width and center column, and
+    // how overlapping riders stack. Built from the same pre-reroute
+    // geometry the budget read.
+    let plans =
+        plan_gap_riders(stage.transitions, stage.layouts, stage.trans_geoms, stage.canvas_width);
+    let mut rider_by_idx: HashMap<usize, &RiderPlan> = HashMap::new();
+    for group in plans.values() {
+        for r in &group.riders {
+            rider_by_idx.insert(r.idx, r);
+        }
+    }
 
     for (idx, t) in stage.transitions.iter().enumerate() {
         let Some(from) = stage.id_to_layout.get(&t.from) else { continue };
@@ -138,6 +158,7 @@ pub(super) fn draw_transitions(stage: &mut DrawStage<'_>) {
             avoid_junction_cols: &avoid_cols,
             stack_offset,
             gap_row0_lines,
+            riding: rider_by_idx.get(&idx).copied(),
         };
         draw_external_transition(stage.surface, &tcx, t.label.as_deref(), row);
     }

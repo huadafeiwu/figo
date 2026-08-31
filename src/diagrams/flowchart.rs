@@ -14,13 +14,14 @@ use crate::error::{FigoError, Result};
 use crate::layout::connector::Connector;
 use crate::layout::geom::{Anchor, Rect};
 use crate::layout::{
-    RidingLabel, beside_line_label_avail, corridor_label_avail, corridor_label_block_top,
-    h_corridor_len, riding_placement_cols,
+    RidingCandidate, RidingLabel, allocate_riding_rows, beside_line_label_avail,
+    corridor_label_avail, corridor_label_block_top, h_corridor_len, riding_placement_cols,
 };
 use crate::style::{BorderStyle, Charset, LineStyle};
 use crate::text::wrap_label;
 use unicode_width::UnicodeWidthStr;
 
+use super::flowchart_riding::{PlacedRider, RidingRequest, place_riding_label};
 use super::flowchart_shape::{draw_diamond, node_dims};
 
 // Re-export NodeShape so the public API path `figo::diagrams::flowchart::NodeShape`
@@ -79,6 +80,11 @@ struct PositionedNode {
 /// Vertical stride (rows) between successive nodes in auto-layout.
 /// Shared by `layout_auto` and `render_positions` canvas sizing.
 const AUTO_STRIDE_ROWS: usize = 4;
+
+/// Bottom margin below the deepest structure on the canvas (breathing
+/// room, one stride, and slack). Shared by the canvas-height
+/// calculation and the riding row limit so the two never diverge.
+const CANVAS_BOTTOM_MARGIN: usize = 2 + AUTO_STRIDE_ROWS + 4;
 
 impl Flowchart {
     /// Create a new flowchart builder.
@@ -357,40 +363,61 @@ impl Flowchart {
         // gap just above its target box (for skip-layer connectors the
         // block lands below the transit layers). Same-gap forks also
         // carry the sibling corridor label's spill below the corridor
-        // row. The wrap width is the same sibling-aware ladder the draw
-        // pass uses; one `|` rail rides on each side of the block.
+        // row. Riders whose spans overlap stack vertically (the same
+        // `allocate_riding_rows` the draw-side placement uses), so the
+        // stride must fit the tallest cluster stack, not one rider.
         let mut riding_stride_demand: HashMap<usize, usize> = HashMap::new();
-        for conn in &self.connections {
-            let Some(label) = &conn.label else { continue };
-            let (Some(&from_idx), Some(&to_idx)) =
-                (id_to_idx.get(conn.from.as_str()), id_to_idx.get(conn.to.as_str()))
-            else {
-                continue;
-            };
-            let from_layer = id_to_layer.get(&from_idx).copied().unwrap_or(0);
-            let to_layer = id_to_layer.get(&to_idx).copied().unwrap_or(0);
-            if from_layer >= to_layer {
-                continue;
+        {
+            // Per gap: riders as (span, lines, same-gap corridor spill).
+            let mut gap_riders: HashMap<usize, Vec<(RidingCandidate, usize)>> = HashMap::new();
+            for conn in &self.connections {
+                let Some(label) = &conn.label else { continue };
+                let (Some(&from_idx), Some(&to_idx)) =
+                    (id_to_idx.get(conn.from.as_str()), id_to_idx.get(conn.to.as_str()))
+                else {
+                    continue;
+                };
+                let from_layer = id_to_layer.get(&from_idx).copied().unwrap_or(0);
+                let to_layer = id_to_layer.get(&to_idx).copied().unwrap_or(0);
+                if from_layer >= to_layer {
+                    continue;
+                }
+                let from_cx = xs[from_idx] + dims[from_idx].0 / 2;
+                let to_cx = xs[to_idx] + dims[to_idx].0 / 2;
+                if from_cx != to_cx {
+                    continue; // corridor connector: no riding
+                }
+                let Some(sibs) = source_corridor_sibs.get(conn.from.as_str()) else { continue };
+                let far_cols: Vec<usize> = sibs.iter().map(|&(c, _)| c).collect();
+                let avail = beside_line_label_avail(from_cx, self.width);
+                let (wrap_w, _) = riding_placement_cols(&far_cols, from_cx, self.width, avail);
+                let wrapped = wrap_label(label, wrap_w);
+                let lo = from_cx.saturating_sub(wrap_w / 2);
+                // Same-gap forks share the gap with their sibling
+                // corridor labels' spill below the corridor row.
+                let spill = if to_layer == from_layer + 1 {
+                    sibs.iter().map(|&(_, n)| n).max().unwrap_or(0).saturating_sub(2)
+                } else {
+                    0
+                };
+                gap_riders.entry(to_layer - 1).or_default().push((
+                    RidingCandidate {
+                        span_lo: lo,
+                        span_hi: lo + wrap_w,
+                        lines: wrapped.line_count,
+                    },
+                    spill,
+                ));
             }
-            let from_cx = xs[from_idx] + dims[from_idx].0 / 2;
-            let to_cx = xs[to_idx] + dims[to_idx].0 / 2;
-            if from_cx != to_cx {
-                continue; // corridor connector: no riding
+            for (gap, riders) in gap_riders {
+                let candidates: Vec<RidingCandidate> = riders.iter().map(|(c, _)| *c).collect();
+                let (_, demand) = allocate_riding_rows(&candidates);
+                // One `|` rail rides on each side of the block, plus
+                // the same-gap corridor spill.
+                let spill = riders.iter().map(|(_, s)| *s).max().unwrap_or(0);
+                let d = demand + 4 + spill;
+                riding_stride_demand.entry(gap).and_modify(|v| *v = (*v).max(d)).or_insert(d);
             }
-            let Some(sibs) = source_corridor_sibs.get(conn.from.as_str()) else { continue };
-            let spill = sibs.iter().map(|&(_, n)| n).max().unwrap_or(0).saturating_sub(2);
-            let far_cols: Vec<usize> = sibs.iter().map(|&(c, _)| c).collect();
-            let avail = beside_line_label_avail(from_cx, self.width);
-            let (wrap_w, _) = riding_placement_cols(&far_cols, from_cx, self.width, avail);
-            let n_ride = wrap_label(label, wrap_w).line_count;
-            let mut demand = n_ride + 4;
-            if to_layer == from_layer + 1 {
-                demand += spill; // the fork and the stretch share one gap
-            }
-            riding_stride_demand
-                .entry(to_layer - 1)
-                .and_modify(|v| *v = (*v).max(demand))
-                .or_insert(demand);
         }
 
         // Pass 3: y positions. The stride after each layer grows to fit
@@ -428,17 +455,6 @@ impl Flowchart {
         // Reserve room on the right for back-edge side corridors and labels.
         let side_room = self.side_room_for_back_edges(positions);
         let total_w = max_w + side_room;
-
-        let max_h = positions.iter().map(|p| p.rect.bottom()).max().unwrap_or(10)
-            + 2
-            + AUTO_STRIDE_ROWS
-            + 4;
-        let mut canvas = Canvas::new(total_w, max_h);
-
-        // Phase 1 — node borders and labels.
-        for pos in positions {
-            self.draw_node(&mut canvas, pos);
-        }
 
         // Fork-riding aggregation: a purely vertical forward connector
         // (same center column as its target) anchors its label at the
@@ -478,8 +494,73 @@ impl Flowchart {
             fork_sibs.entry(conn.from.as_str()).or_default().push((to_cx, block_bottom));
         }
 
-        // Phase 2 — connectors.
-        for conn in &self.connections {
+        // Fork-riding placement pre-pass, in connection declaration
+        // order: each rider's stretch search treats the riders already
+        // placed in this pass as blockers (the same rows are never
+        // handed to two riders), and a block taller than every clear
+        // on-line stretch falls back beside the blocker cluster (see
+        // `flowchart_riding`). Placing before the canvas is sized lets
+        // every block bottom count toward the canvas height exactly
+        // like a box bottom, so no block is silently dropped past the
+        // canvas edge.
+        let box_bottom = positions.iter().map(|p| p.rect.bottom()).max().unwrap_or(10);
+        let row_limit = box_bottom + CANVAS_BOTTOM_MARGIN;
+        let mut placed_riders: Vec<PlacedRider> = Vec::new();
+        let mut riding: HashMap<usize, RidingLabel> = HashMap::new();
+        let mut riding_bottom = 0usize;
+        for (ci, conn) in self.connections.iter().enumerate() {
+            let (Some(&from), Some(&to)) =
+                (pos_map.get(conn.from.as_str()), pos_map.get(conn.to.as_str()))
+            else {
+                continue;
+            };
+            if from.rect.y >= to.rect.y {
+                continue; // back-edge: side route, never rides
+            }
+            let Some(label) = conn.label.as_deref() else { continue };
+            let from_cx = from.rect.x + from.rect.w / 2;
+            let to_cx = to.rect.x + to.rect.w / 2;
+            if from_cx != to_cx {
+                continue; // corridor connector: label embeds in the corridor
+            }
+            let Some(sibs) = fork_sibs.get(conn.from.as_str()) else { continue };
+            let boxes: Vec<Rect> = positions
+                .iter()
+                .map(|p| p.rect)
+                .filter(|r| *r != from.rect && *r != to.rect)
+                .collect();
+            let placement = place_riding_label(&RidingRequest {
+                label,
+                from_rect: from.rect,
+                to_rect: to.rect,
+                sibs,
+                boxes: &boxes,
+                placed: &placed_riders,
+                user_width: self.width,
+                canvas_w: total_w,
+                row_limit,
+            });
+            riding_bottom = riding_bottom.max(placement.bottom);
+            placed_riders.push(PlacedRider {
+                span: placement.span,
+                rows: (placement.riding.block_top, placement.bottom),
+            });
+            riding.insert(ci, placement.riding);
+        }
+
+        // Canvas height: riding block bottoms are treated exactly like
+        // box bottoms — same margin expression.
+        let max_h = box_bottom.max(riding_bottom) + CANVAS_BOTTOM_MARGIN;
+        let mut canvas = Canvas::new(total_w, max_h);
+
+        // Phase 1 — node borders and labels.
+        for pos in positions {
+            self.draw_node(&mut canvas, pos);
+        }
+
+        // Phase 2 — connectors. Riding directives come from the
+        // pre-pass above (one placement per rider, blockers included).
+        for (ci, conn) in self.connections.iter().enumerate() {
             let (Some(&from), Some(&to)) =
                 (pos_map.get(conn.from.as_str()), pos_map.get(conn.to.as_str()))
             else {
@@ -506,70 +587,8 @@ impl Flowchart {
             if let Some(label) = &conn.label {
                 connector.label = Some(label.clone());
             }
-            // Fork riding for labeled vertical forward connectors with
-            // corridor siblings: measure the sibling-aware wrap width,
-            // then pick the leg stretch clear of sibling label blocks
-            // and intermediate boxes — preferring the stretch nearest
-            // the target box — and center the block within it.
-            if !is_back && conn.label.is_some() {
-                let from_cx = from.rect.x + from.rect.w / 2;
-                let to_cx = to.rect.x + to.rect.w / 2;
-                if from_cx == to_cx {
-                    if let Some(sibs) = fork_sibs.get(conn.from.as_str()) {
-                        let label = conn.label.as_deref().unwrap();
-                        let (sy, ty) = (from.rect.bottom(), to.rect.y);
-                        let below_row = sibs.iter().map(|&(_, bb)| bb + 1).max().unwrap_or(sy + 1);
-                        let far_cols: Vec<usize> = sibs.iter().map(|&(c, _)| c).collect();
-                        let avail = beside_line_label_avail(from_cx, self.width);
-                        let (wrap_w, _) =
-                            riding_placement_cols(&far_cols, from_cx, canvas.width(), avail);
-                        let n = wrap_label(label, wrap_w).line_count;
-                        // The block's widest line spans this column range
-                        // when centered on the leg.
-                        let lx = from_cx.saturating_sub(wrap_w / 2);
-                        let span = (lx, lx + wrap_w);
-                        // Intermediate boxes that overlap the span cut the
-                        // candidate rows [below_row, ty) into stretches.
-                        let mut blockers: Vec<(usize, usize)> = positions
-                            .iter()
-                            .map(|p| p.rect)
-                            .filter(|r| *r != from.rect && *r != to.rect)
-                            .filter(|r| {
-                                r.y < ty
-                                    && r.bottom() > below_row
-                                    && r.right() > span.0
-                                    && r.x < span.1
-                            })
-                            .map(|r| (r.y.max(below_row), r.bottom().min(ty)))
-                            .collect();
-                        blockers.sort_by_key(|&(lo, _)| lo);
-                        let mut stretches: Vec<(usize, usize)> = Vec::new();
-                        let mut start = below_row;
-                        for (b_lo, b_hi) in blockers {
-                            if b_lo > start {
-                                stretches.push((start, b_lo));
-                            }
-                            start = start.max(b_hi);
-                        }
-                        if ty > start {
-                            stretches.push((start, ty));
-                        }
-                        // Prefer the stretch nearest the target with room
-                        // for the block plus its `|` rails, then without
-                        // rails, then the widest anywhere.
-                        let chosen = stretches
-                            .iter()
-                            .rev()
-                            .find(|&&(lo, hi)| hi - lo >= n + 2)
-                            .or_else(|| stretches.iter().rev().find(|&&(lo, hi)| hi - lo >= n))
-                            .or_else(|| stretches.iter().max_by_key(|&&(lo, hi)| hi - lo));
-                        let block_top = match chosen {
-                            Some(&(lo, hi)) => lo + (hi - lo).saturating_sub(n) / 2,
-                            None => below_row, // degenerate: no clear stretch
-                        };
-                        connector = connector.with_riding_label(RidingLabel { wrap_w, block_top });
-                    }
-                }
+            if let Some(rl) = riding.get(&ci) {
+                connector = connector.with_riding_label(*rl);
             }
             if is_back {
                 let w = canvas.width();
@@ -1069,5 +1088,148 @@ mod tests {
         for ch in label.chars() {
             assert!(out.contains(ch), "label char '{ch}' missing:\n{out}");
         }
+    }
+
+    #[test]
+    fn test_riding_fallback_moves_off_the_line() {
+        // Ladder fallback (sibling leg immediately adjacent, d=1): the
+        // wrap ladder returns "move into the wider free span beside the
+        // line" with a new center column. The exe-verified bug dropped
+        // that center column and kept the block centered on the leg,
+        // covering the sibling leg's cells. The block must land in the
+        // free span, clear of both legs.
+        let fc = Flowchart::new(80, Charset::Ascii)
+            .layout(Layout::Manual)
+            .add_node(FlowNode {
+                id: "s".into(),
+                label: "S".into(),
+                shape: NodeShape::Rectangle,
+                position: Some((17, 1)),
+            })
+            .add_node(FlowNode {
+                id: "t1".into(),
+                label: "T1".into(),
+                shape: NodeShape::Rectangle,
+                position: Some((17, 12)),
+            })
+            .add_node(FlowNode {
+                id: "t2".into(),
+                label: "T2".into(),
+                shape: NodeShape::Rectangle,
+                position: Some((18, 12)),
+            })
+            .connect("s", "t1", Some("overlap_test_label"))
+            .connect("s", "t2", None);
+        let out = fc.build().unwrap();
+        assert!(out.contains("overlap_test_label"), "label lost:\n{out}");
+        // The block must sit in the left free span (its right edge well
+        // clear of the leg column 20 and the sibling leg column 21),
+        // not centered on the leg.
+        let label_row = out.lines().find(|l| l.contains("overlap_test_label")).expect("label row");
+        let label_end = label_row.rfind('l').expect("label end column");
+        assert!(
+            label_end < 20,
+            "fallback block must move off the line, clear of both legs:\n{label_row}"
+        );
+        insta::assert_snapshot!(out);
+    }
+
+    #[test]
+    fn test_riding_block_never_covers_target_box() {
+        // The riding block is taller than every clear on-line stretch
+        // (a blocker box eats the leg's middle): the exe-verified bug
+        // let the block overflow the widest stretch into the target
+        // box's top border, replacing all six border characters. The
+        // block must fall back beside the blocker cluster instead.
+        let fc = Flowchart::new(80, Charset::Ascii)
+            .layout(Layout::Manual)
+            .add_node(FlowNode {
+                id: "s".into(),
+                label: "S".into(),
+                shape: NodeShape::Rectangle,
+                position: Some((17, 1)),
+            })
+            .add_node(FlowNode {
+                id: "x".into(),
+                label: "X".into(),
+                shape: NodeShape::Rectangle,
+                position: Some((17, 6)),
+            })
+            .add_node(FlowNode {
+                id: "t2".into(),
+                label: "T2".into(),
+                shape: NodeShape::Rectangle,
+                position: Some((26, 6)),
+            })
+            .add_node(FlowNode {
+                id: "t".into(),
+                label: "T".into(),
+                shape: NodeShape::Rectangle,
+                position: Some((17, 11)),
+            })
+            .connect("s", "t", Some("alpha beta gamma delta epsilon zeta eta"))
+            .connect("s", "t2", None);
+        let out = fc.build().unwrap();
+        // No label characters lost.
+        for word in ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta"] {
+            assert!(out.contains(word), "label word '{word}' lost:\n{out}");
+        }
+        // The target box keeps a complete top border row.
+        let lines: Vec<&str> = out.lines().collect();
+        let t_row = lines.iter().position(|l| l.contains("| T ")).expect("T box row");
+        assert!(
+            lines[t_row - 1].contains("+----+"),
+            "T top border overwritten by the riding block:\n{out}"
+        );
+        insta::assert_snapshot!(out);
+    }
+
+    #[test]
+    fn test_same_column_riders_keep_their_own_rows() {
+        // Two riding connectors on the same column (D→Z and X→Z) each
+        // prefer the stretch nearest the target: the exe-verified bug
+        // let the later block overwrite the earlier one entirely (14
+        // characters lost, not even a fragment survived). Sequential
+        // placement must give each rider rows of its own.
+        let fc = Flowchart::new(80, Charset::Ascii)
+            .layout(Layout::Manual)
+            .add_node(FlowNode {
+                id: "d".into(),
+                label: "D".into(),
+                shape: NodeShape::Rectangle,
+                position: Some((17, 1)),
+            })
+            .add_node(FlowNode {
+                id: "x".into(),
+                label: "X".into(),
+                shape: NodeShape::Rectangle,
+                position: Some((17, 7)),
+            })
+            .add_node(FlowNode {
+                id: "y".into(),
+                label: "Y".into(),
+                shape: NodeShape::Rectangle,
+                position: Some((40, 12)),
+            })
+            .add_node(FlowNode {
+                id: "z".into(),
+                label: "Z".into(),
+                shape: NodeShape::Rectangle,
+                position: Some((17, 16)),
+            })
+            .add_node(FlowNode {
+                id: "b".into(),
+                label: "B".into(),
+                shape: NodeShape::Rectangle,
+                position: Some((40, 16)),
+            })
+            .connect("d", "z", Some("down rider one"))
+            .connect("x", "z", Some("down rider two"))
+            .connect("d", "b", None)
+            .connect("x", "y", None);
+        let out = fc.build().unwrap();
+        assert!(out.contains("down rider one"), "first rider's label lost:\n{out}");
+        assert!(out.contains("down rider two"), "second rider's label lost:\n{out}");
+        insta::assert_snapshot!(out);
     }
 }

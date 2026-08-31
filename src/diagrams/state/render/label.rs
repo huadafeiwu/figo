@@ -16,12 +16,12 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::canvas::Layer;
 use crate::diagrams::state::render::transition::TransitionCtx;
-use crate::layout::riding_placement_cols;
 use crate::render::surface::Surface;
 use crate::style::{BorderStyle, Charset};
 use crate::text::wrap_label;
 
 use super::avoidance::{avoid_box_x, shift_off_junctions};
+use super::riding_plan::RiderPlan;
 
 /// Geometry of the drawn V-H-V route, consumed by label placement.
 pub(super) struct RouteGeometry {
@@ -63,11 +63,11 @@ pub(super) fn draw_transition_label(
     // An aligned edge sharing its gap with corridor siblings rides the
     // exclusive leg segment below/above the fork instead of the default
     // mid-route position (which coincides with the sibling corridor row
-    // and makes branch attribution ambiguous).
-    let rides_own_leg = corridor_w == 0 && !tcx.avoid_junction_cols.is_empty();
-
-    let block = if rides_own_leg {
-        own_leg_placement(tcx, text, route)
+    // and makes branch attribution ambiguous). The riding plan — shared
+    // with the gap expansion — carries the wrap width, center column,
+    // and cluster stacking for this label.
+    let block = if let Some(plan) = tcx.riding {
+        own_leg_placement(tcx, plan, text, route)
     } else {
         default_placement(tcx, text, row, route, avail)
     };
@@ -183,14 +183,19 @@ fn default_placement(
 /// Own-leg placement for an aligned edge with corridor siblings: the
 /// block rides the leg segment that belongs exclusively to this
 /// transition (between the corridor row and the target box), centered
-/// within it. All values are measured from the route geometry — no
-/// fixed offsets.
-fn own_leg_placement(tcx: &TransitionCtx<'_>, text: &str, route: &RouteGeometry) -> LabelBlock {
-    let ride_col = route.to_leg_cx;
-    let (wrap_w, center_x) =
-        riding_placement_cols(tcx.avoid_junction_cols, ride_col, tcx.canvas_width, tcx.geom.avail);
-
-    let wrapped = wrap_label(text, wrap_w);
+/// within it — or, when its span overlaps another rider's, stacked on a
+/// successive row band of its overlap cluster. All values come from the
+/// riding plan (shared with the gap expansion) and the route geometry —
+/// no fixed offsets.
+fn own_leg_placement(
+    tcx: &TransitionCtx<'_>,
+    plan: &RiderPlan,
+    text: &str,
+    route: &RouteGeometry,
+) -> LabelBlock {
+    // Wrap at the plan's width — the same sibling-aware ladder the gap
+    // expansion budgeted rows for.
+    let wrapped = wrap_label(text, plan.wrap_w);
 
     // Rows the gap's row-0 label block overhangs the corridor row
     // (odd-height blocks straddle it): the exclusive segment starts
@@ -214,7 +219,23 @@ fn own_leg_placement(tcx: &TransitionCtx<'_>, text: &str, route: &RouteGeometry)
             route.effective_route_y.saturating_sub(route.to_anchor + 1).saturating_sub(skip_above),
         )
     };
-    let block_top = seg_start + seg_len.saturating_sub(wrapped.line_count) / 2;
-
-    LabelBlock { lines: wrapped.lines, center_x, block_top }
+    let n = wrapped.line_count;
+    // Overlap clusters fill successive row bands from the fork-row end
+    // of the segment toward the target box — one rule for both
+    // directions; a rider clear of every other block centers instead.
+    let block_top = match plan.row_offset {
+        Some(off) if route.forward => seg_start + off,
+        Some(off) => seg_start + seg_len.saturating_sub(off + n),
+        None => seg_start + seg_len.saturating_sub(n) / 2,
+    };
+    // Budget/draw drift alarm: the gap expansion guarantees the segment
+    // fits every rider (cluster stack heights included). If this fires
+    // in a debug/test run, the two passes have diverged — investigate
+    // rather than clamp.
+    debug_assert!(
+        block_top + n <= seg_start + seg_len,
+        "riding block overflows its segment: block_top={block_top} n={n} seg=[{seg_start},{}]",
+        seg_start + seg_len
+    );
+    LabelBlock { lines: wrapped.lines, center_x: plan.center_x, block_top }
 }

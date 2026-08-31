@@ -7,6 +7,7 @@ pub mod arrow;
 pub mod banner;
 pub mod box_art;
 pub mod flowchart;
+mod flowchart_riding;
 pub mod flowchart_shape;
 pub mod gantt;
 pub mod packet;

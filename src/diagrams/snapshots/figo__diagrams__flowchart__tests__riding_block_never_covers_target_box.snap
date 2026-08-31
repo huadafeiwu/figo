@@ -1,0 +1,17 @@
+---
+source: src/diagrams/flowchart.rs
+expression: out
+---
+                 +----+
+                 | S  |
+                 +----+
+                    |
+                    +--------v
+                 +----+   +----+
+                 | X  |   | T2 |
+alpha beta gamma +----+   +----+
+  delta epsilon     |
+    zeta eta        v
+                 +----+
+                 | T  |
+                 +----+

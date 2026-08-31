@@ -1,0 +1,22 @@
+---
+source: src/diagrams/flowchart.rs
+expression: out
+---
+                 +----+
+                 | D  |
+                 +----+
+                    |
+                    |
+                    |
+                 +----+
+                 | X  |
+                 +----+
+                    |
+                    +----------------------v
+                    |                   +----+
+                    |                   | Y  |
+                    |                   +----+
+             down rider one----------------v
+ down rider two  +----+                 +----+
+                 | Z  |                 | B  |
+                 +----+                 +----+

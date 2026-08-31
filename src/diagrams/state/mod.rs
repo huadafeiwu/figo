@@ -622,4 +622,49 @@ mod tests {
         );
         insta::assert_snapshot!(out);
     }
+
+    #[test]
+    fn test_gap_riders_stack_instead_of_overlapping() {
+        // Two aligned edges (A→B, E→D) in one gap, both labeled, whose
+        // riding blocks overlap horizontally: without mutual avoidance
+        // the later-drawn block overwrites the earlier one's characters
+        // in the overlap zone (exe-verified: 8 of 24 L's lost, and the
+        // survivor flips with declaration order). The riders must stack
+        // on successive rows instead.
+        let out = StateDiagram::new(80, Charset::Ascii)
+            .add_state(StateNode {
+                id: "a".into(),
+                label: "A".into(),
+                state_type: StateType::Simple,
+            })
+            .add_state(StateNode {
+                id: "e".into(),
+                label: "E".into(),
+                state_type: StateType::Simple,
+            })
+            .add_state(StateNode {
+                id: "b".into(),
+                label: "B".into(),
+                state_type: StateType::Simple,
+            })
+            .add_state(StateNode {
+                id: "d".into(),
+                label: "D".into(),
+                state_type: StateType::Simple,
+            })
+            .add_transition("a", "b", Some("LLLL LLLL LLLL LLLL LLLL LLLL"))
+            .add_transition("e", "d", Some("RRRR RRRR RRRR RRRR RRRR RRRR"))
+            .add_transition("a", "d", None)
+            .build()
+            .unwrap();
+        assert_eq!(out.matches('L').count(), 24, "first rider lost characters:\n{out}");
+        assert_eq!(out.matches('R').count(), 24, "second rider lost characters:\n{out}");
+        for line in out.lines() {
+            assert!(
+                !(line.contains('L') && line.contains('R')),
+                "riding labels must not share a row:\n{line}\n{out}"
+            );
+        }
+        insta::assert_snapshot!(out);
+    }
 }

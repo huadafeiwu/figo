@@ -1,0 +1,18 @@
+---
+source: src/diagrams/flowchart.rs
+expression: out
+---
+                 +----+
+                 | S  |
+                 +----+
+                    |
+                    +-
+                    +-
+                    +-
+ overlap_test_label +-
+                    +-
+                    +-
+                    vv
+                 ++----+
+                 |  T2 |
+                 ++----+

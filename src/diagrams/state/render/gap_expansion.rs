@@ -7,8 +7,9 @@ use crate::diagrams::state::layout::{LayoutParams, StateLayout};
 use crate::diagrams::state::render::label_rows::gap_key_of;
 use crate::diagrams::state::sugiyama::TransGeom;
 use crate::diagrams::state::types::Transition;
-use crate::layout::riding_placement_cols;
 use crate::text::wrap_label;
+
+use super::riding_plan::plan_gap_riders;
 
 /// Per-gap label space budget: stacked block heights above the corridor
 /// row (indexed by stacking row), plus the riding blocks that live on
@@ -25,10 +26,11 @@ pub(super) struct GapLabelBudget {
 /// Per-gap wrapped label heights: for each vertical gap, the tallest
 /// label block on each stacking row (rows are the x-overlap stacking
 /// groups from `compute_label_rows`), and the tallest below-corridor
-/// block. Line counts use the same wrap widths the draw pass uses
-/// (including the sibling-aware width ladder for riding labels), so the
-/// vertical space reserved here always matches what actually gets drawn.
-/// `width` is the canvas width estimate available at expansion time.
+/// rider stack. Line counts use the same wrap widths the draw pass uses
+/// (including the sibling-aware width ladder for riding labels, planned
+/// in `riding_plan`), so the vertical space reserved here always
+/// matches what actually gets drawn. `width` is the canvas width shared
+/// with the draw pass.
 pub(super) fn gap_label_heights(
     transitions: &[Transition],
     layouts: &[StateLayout],
@@ -39,30 +41,34 @@ pub(super) fn gap_label_heights(
     let id_to_layout: HashMap<&str, &StateLayout> =
         layouts.iter().map(|l| (l.id.as_str(), l)).collect();
 
-    // Gaps that contain a corridor transition, with their junction
-    // columns (corridor endpoints): an aligned edge in such a gap has
-    // its default mid-route label position on the sibling corridor row,
-    // so its label rides the leg below the fork instead.
-    let mut gap_junctions: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
-    for (idx, t) in transitions.iter().enumerate() {
-        if t.from == t.to {
-            continue;
+    // Riding labels: their wrap widths, cluster stacking, and half-gap
+    // demands all come from one plan (see `riding_plan`) — the same
+    // plan the draw pass reads.
+    let plans = plan_gap_riders(transitions, layouts, trans_geoms, width);
+    let mut rider_idx: HashSet<usize> = HashSet::new();
+    let mut gaps: HashMap<(usize, usize), GapLabelBudget> = HashMap::new();
+    for (key, group) in &plans {
+        // The riding convention keeps one leg row on each side of the
+        // block (`| label |`), mirroring the corridor embed's
+        // `---label---` padding — without the lead-in row the fork
+        // junction glyph degrades to a corner (the leg continues behind
+        // the label, but the repair pass cannot see it). The demand is
+        // the TALLEST overlap cluster's stack (clusters sit in
+        // different columns and share rows), not the sum over riders.
+        let budget = gaps.entry(*key).or_default();
+        if group.below_lines > 0 {
+            budget.below = budget.below.max(group.below_lines + 2);
         }
-        let (Some(from), Some(to)) =
-            (id_to_layout.get(t.from.as_str()), id_to_layout.get(t.to.as_str()))
-        else {
-            continue;
-        };
-        if trans_geoms[idx].corridor_w > 0 {
-            let entry = gap_junctions.entry(gap_key_of(from.rect, to.rect)).or_default();
-            entry.push(trans_geoms[idx].left_x);
-            entry.push(trans_geoms[idx].right_x);
+        if group.above_lines > 0 {
+            budget.above_ride = budget.above_ride.max(group.above_lines + 2);
+        }
+        for r in &group.riders {
+            rider_idx.insert(r.idx);
         }
     }
 
-    let mut gaps: HashMap<(usize, usize), GapLabelBudget> = HashMap::new();
     for (idx, t) in transitions.iter().enumerate() {
-        if t.from == t.to {
+        if t.from == t.to || rider_idx.contains(&idx) {
             continue;
         }
         let Some(from) = id_to_layout.get(t.from.as_str()) else { continue };
@@ -71,39 +77,11 @@ pub(super) fn gap_label_heights(
         let row = label_rows.get(&idx).copied().unwrap_or(0);
         let key = gap_key_of(from.rect, to.rect);
         let budget = gaps.entry(key).or_default();
-        if trans_geoms[idx].corridor_w == 0 && gap_junctions.contains_key(&key) {
-            // Aligned edge with corridor siblings: its block rides the
-            // exclusive leg segment beyond the corridor row. Wrap at the
-            // same sibling-aware width ladder the draw pass uses (the
-            // pre-route `to_cx` stands in for the drawn leg column), so
-            // the reserved height matches the drawn block. The riding
-            // convention keeps one leg row on each side of the block
-            // (`| label |`), mirroring the corridor embed's `---label---`
-            // padding — without the lead-in row the fork junction glyph
-            // degrades to a corner (the leg continues behind the label,
-            // but the repair pass cannot see it). Forward edges ride
-            // below the corridor row, upward edges above it.
-            let junctions: &[usize] = gap_junctions[&key].as_slice();
-            let wrap_w = riding_placement_cols(
-                junctions,
-                trans_geoms[idx].to_cx,
-                width,
-                trans_geoms[idx].avail,
-            )
-            .0;
-            let n = wrap_label(label, wrap_w).line_count + 2;
-            if from.rect.y < to.rect.y {
-                budget.below = budget.below.max(n);
-            } else {
-                budget.above_ride = budget.above_ride.max(n);
-            }
-        } else {
-            let n = wrap_label(label, trans_geoms[idx].avail).line_count;
-            if budget.above.len() <= row {
-                budget.above.resize(row + 1, 0);
-            }
-            budget.above[row] = budget.above[row].max(n);
+        let n = wrap_label(label, trans_geoms[idx].avail).line_count;
+        if budget.above.len() <= row {
+            budget.above.resize(row + 1, 0);
         }
+        budget.above[row] = budget.above[row].max(n);
     }
     gaps
 }

@@ -8,22 +8,25 @@
 //! - [`geom`]: `Rect`, `Anchor`
 //! - [`node`]: `Node`, `NodeBuilder`
 //! - [`connector`]: `Connector` and orthogonal routing helpers
+//! - [`riding`]: riding-label primitives (wrap ladder, directive, cluster rows)
 //! - [`routing`]: shared routing geometry helpers (`natural_mid_y`, etc.)
 //! - [`sizing`]: column distribution, fit-to-width helpers
 
 pub mod connector;
 pub mod geom;
 pub mod node;
+pub mod riding;
 pub mod routing;
 pub mod sizing;
 
 // Re-exports for diagram internals.
-pub use connector::{
-    Connector, RidingLabel, arrow_from_path, arrow_glyph_for_pair, beside_line_label_avail,
-    corridor_label_avail, corridor_label_block_top, riding_placement_cols,
-};
+pub use connector::{Connector, arrow_from_path, arrow_glyph_for_pair};
 pub use geom::{Anchor, Rect};
 pub use node::{Node, NodeBuilder, NodeId, NodeLine, horizontal_line_glyph, vertical_line_glyph};
+pub use riding::{
+    RidingCandidate, RidingLabel, allocate_riding_rows, beside_line_label_avail,
+    corridor_label_avail, corridor_label_block_top, riding_placement_cols,
+};
 pub use routing::{
     Segment, build_three_h_segment, build_three_segment, detoured_mid_x, detoured_mid_y,
     h_corridor_len, natural_mid_y, path_intersects_any, side_route_column, snap_outside,
