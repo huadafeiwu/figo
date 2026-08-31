@@ -8,8 +8,9 @@
 //! structural (lanes always fit them), and message labels widen the
 //! lane-to-lane distance — or the right margin for the last lane — so
 //! they fit on one line, bounded by the display budget. Labels that
-//! would exceed the budget wrap inside their [`LaneLayout::label_region`],
-//! which never covers a lifeline column.
+//! would exceed the budget wrap inside their `LaneLayout::label_region`
+//! (private by design — the lane model owns it), which never covers a
+//! lifeline column.
 
 use std::collections::HashMap;
 use std::fmt;
