@@ -109,6 +109,41 @@ pub struct Connector {
     pub riding: Option<RidingLabel>,
 }
 
+/// Nearest block row free of other label content: `block` holds each
+/// line's `(lx, line_w)` (its rows are `top + i`), and the canvas is
+/// checked for Label-layer cells. Used by corridor labels, which
+/// converge on shared rows (see `Connector::draw_label`); the search
+/// goes down first — toward the target, where converging label stacks
+/// have room — then up, widening until a free row is found within
+/// `[lo, hi]`. Returns `top` unchanged when it is already free (the
+/// common case) or when nothing in range is free (degenerate: draw on
+/// top, as before).
+fn collision_free_block_top(
+    canvas: &Canvas,
+    block: &[(usize, usize)],
+    top: usize,
+    lo: usize,
+    hi: usize,
+) -> usize {
+    let occupied = |t: usize| {
+        block.iter().enumerate().any(|(i, &(lx, w))| {
+            (lx..lx + w).any(|c| canvas.cell(c, t + i).is_some_and(|cl| cl.layer == Layer::Label))
+        })
+    };
+    if block.is_empty() || !occupied(top) {
+        return top;
+    }
+    let span = (hi - lo) + 1;
+    for d in 1..=span {
+        for t in [top + d, top.saturating_sub(d)] {
+            if t >= lo && t <= hi && !occupied(t) {
+                return t;
+            }
+        }
+    }
+    top
+}
+
 impl Connector {
     /// Create a new connector. The arrowhead glyph is derived from the
     /// source anchor so it points INTO the target.
@@ -383,14 +418,31 @@ impl Connector {
             // the old per-line clamp then mapped two lines onto the same
             // row, where one silently overwrote the other and label
             // characters were lost. Shifting the block keeps every line.
-            let block_top = corridor_label_block_top(y, n, sy, ty);
+            let mut block_top = corridor_label_block_top(y, n, sy, ty);
+
+            // Pre-compute each line's column span, then pick the nearest
+            // block row free of other labels: converging edges routinely
+            // share a corridor row (a detoured long edge lands exactly on
+            // a lower fork's natural row), and without this the later
+            // label overwrites the earlier ones' characters — the edges
+            // then look silently dropped.
+            let spans: Vec<(usize, usize)> = lines
+                .iter()
+                .map(|line| {
+                    let line_w = UnicodeWidthStr::width(line.as_str());
+                    let base_x = center.saturating_sub(line_w / 2).max(x);
+                    (base_x.min((x + len).saturating_sub(line_w)).max(x), line_w)
+                })
+                .collect();
+            let hi = ty.saturating_sub(n.saturating_sub(1));
+            if hi >= sy {
+                block_top = collision_free_block_top(canvas, &spans, block_top, sy, hi);
+            }
 
             // Draw all label lines first.
             let mut label_positions: Vec<(usize, usize, usize)> = Vec::new();
             for (i, line) in lines.iter().enumerate() {
-                let line_w = UnicodeWidthStr::width(line.as_str());
-                let base_x = center.saturating_sub(line_w / 2).max(x);
-                let lx = base_x.min((x + len).saturating_sub(line_w)).max(x);
+                let (lx, line_w) = spans[i];
                 let label_y = block_top + i;
                 canvas.put_str_layered(lx, label_y, line, Layer::Label, None);
                 label_positions.push((lx, line_w, label_y));
@@ -451,6 +503,22 @@ impl Connector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collision_free_block_top_finds_nearest_free_row() {
+        let mut canvas = Canvas::new(20, 10);
+        canvas.put_layered(5, 4, 'x', Layer::Label, None); // occupies row 4
+        let block = [(5usize, 2usize)];
+        // Row 4 blocked at cols 5-6; row 5 free — nearest row below wins.
+        assert_eq!(collision_free_block_top(&canvas, &block, 4, 0, 8), 5);
+        // A free target row is returned unchanged (the common case).
+        assert_eq!(collision_free_block_top(&canvas, &block, 6, 0, 8), 6);
+        // A fully blocked range keeps the original row (degenerate).
+        for r in 0..=8 {
+            canvas.put_layered(5, r, 'x', Layer::Label, None);
+        }
+        assert_eq!(collision_free_block_top(&canvas, &block, 4, 0, 8), 4);
+    }
 
     #[test]
     fn straight_vertical_line() {

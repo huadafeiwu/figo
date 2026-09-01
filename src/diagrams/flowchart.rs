@@ -1232,4 +1232,65 @@ mod tests {
         assert!(out.contains("down rider two"), "second rider's label lost:\n{out}");
         insta::assert_snapshot!(out);
     }
+
+    #[test]
+    fn test_converging_detoured_edges_keep_labels() {
+        // A wide blocker under two diamonds forces their long "no" edges
+        // to a shared fail box (in another column) to detour below every
+        // obstacle — landing exactly on the bottom diamond's natural fork
+        // row. The superposed corridors used to overwrite each other's
+        // labels (only one "no" of three survived, the edges looked
+        // silently dropped). Each converging edge must keep its own
+        // corridor row so all three labels render.
+        let wide: String = "w".repeat(40);
+        let fc = Flowchart::new(100, Charset::Ascii)
+            .add_node(FlowNode {
+                id: "d1".into(),
+                label: "d1?".into(),
+                shape: NodeShape::Diamond,
+                position: None,
+            })
+            .add_node(FlowNode {
+                id: "d2".into(),
+                label: "d2?".into(),
+                shape: NodeShape::Diamond,
+                position: None,
+            })
+            .add_node(FlowNode {
+                id: "wide".into(),
+                label: wide,
+                shape: NodeShape::Rectangle,
+                position: None,
+            })
+            .add_node(FlowNode {
+                id: "d3".into(),
+                label: "d3?".into(),
+                shape: NodeShape::Diamond,
+                position: None,
+            })
+            .add_node(FlowNode {
+                id: "pass".into(),
+                label: "pass".into(),
+                shape: NodeShape::Rounded,
+                position: None,
+            })
+            .add_node(FlowNode {
+                id: "fail".into(),
+                label: "fail".into(),
+                shape: NodeShape::Rounded,
+                position: None,
+            })
+            .connect("d1", "d2", None)
+            .connect("d2", "wide", None)
+            .connect("wide", "d3", None)
+            .connect("d3", "pass", Some("yes"))
+            .connect("d3", "fail", Some("no"))
+            .connect("d1", "fail", Some("no"))
+            .connect("d2", "fail", Some("no"));
+        let out = fc.build().unwrap();
+        assert_eq!(out.matches("no").count(), 3, "all three no-edge labels must render:\n{out}");
+        assert_eq!(out.matches("yes").count(), 1, "the yes label must render:\n{out}");
+        let rows_with_no = out.lines().filter(|l| l.contains("no")).count();
+        assert_eq!(rows_with_no, 3, "the three no labels must sit on separate rows:\n{out}");
+    }
 }
