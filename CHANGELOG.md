@@ -5,6 +5,45 @@ All notable changes to figo will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] — 2026-09-02
+
+A comprehensive label-layout overhaul: no label character is ever silently
+dropped or drawn over another element, in any diagram type.
+
+### Fixed
+
+- **CJK display width** — double-width characters advance the cursor by two
+  columns everywhere (banner, flowchart, state, sequence, table, tree),
+  fixing misaligned borders and lost characters on Chinese text.
+- **Label layout system ("three rules")** — structural minimums (names,
+  headers, bit widths) size the canvas unconditionally; labels widen their
+  geometry up to the display budget; past the budget they wrap greedily and
+  are never truncated. Replaces the scattered per-diagram clamping that
+  silently dropped characters (table columns, arrow text, box titles,
+  gantt name columns, banner fallback for non-ASCII lines).
+- **Sequence diagrams** — self-loop labels no longer cover lifelines
+  (unified lane model); last-lane self-loops reserve structural space so
+  wrapping never spills past the canvas.
+- **State diagrams** — Sugiyama crossing reduction and coordinate
+  assignment align vertical legs; labels of aligned edges ride their own
+  exclusive leg segment below the fork (clear branch attribution instead
+  of sitting on the sibling corridor row); same-gap labels stack with
+  height awareness; vertical legs reroute around intermediate boxes.
+- **Flowcharts** — fork-riding labels never interleave with corridor
+  sibling labels; converging corridor labels no longer overwrite each other
+  when a long detoured edge lands on a lower fork's row (each shifts to
+  the nearest free row).
+- **Geometry unification** — one shared geometry model (TransGeom) and
+  shared wrap-width helpers between the sizing and drawing passes, closing
+  the estimate/draw drifts that caused rows to be under-reserved.
+
+### Changed
+
+- `width` is optional in every subcommand's JSON (defaults to detected
+  terminal width); the CLI raises the label budget to
+  `max(user width, detected width)`.
+- CONTRIBUTING.md documents the label layout rules for future changes.
+
 ## [0.2.0] — 2026-07-18
 
 ### Changed
