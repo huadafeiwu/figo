@@ -7,8 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.2] — 2026-09-02
 
+### Added
+
+- **Box-width aesthetic budget (flowchart + state)** — node labels wider than
+  40% of the canvas width wrap inside a narrower, taller box instead of
+  stretching their box to a single mega-wide line (a wide box pushes the
+  rightmost node, the side rail, and every east-exit line far right). The
+  budget is deliberately a proportion of the user-chosen width, so it scales
+  with the canvas. Same-layer flowchart siblings that still overflow the
+  canvas re-wrap to an equal share of the remaining width instead of widening
+  the whole canvas.
+
 ### Fixed
 
+- **State diagrams — labels never wrapped** — `state_size` gave every state a
+  single-line box however long the label, past the canvas itself; state boxes
+  now wrap at the same 40% budget, grow taller with the line count, and the
+  double-border accepting states center multi-line labels.
 - **Flowcharts — long forward edges pierce intermediate nodes** — a forward
   edge whose every V-H-V corridor row would cross an obstacle (a wide box
   blocks the target column, the chain blocks the source column) fell back
