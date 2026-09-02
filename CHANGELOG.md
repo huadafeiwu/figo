@@ -5,6 +5,32 @@ All notable changes to figo will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] — 2026-09-02
+
+### Fixed
+
+- **Flowcharts — long forward edges pierce intermediate nodes** — a forward
+  edge whose every V-H-V corridor row would cross an obstacle (a wide box
+  blocks the target column, the chain blocks the source column) fell back
+  to a below-everything detour whose first vertical leg ran straight
+  through every node standing in the source column. The line showed as a
+  spine `|` inside each diamond (diamonds had no interior fill; rectangles
+  hid the line), and the branch label landed at the end of the path —
+  stacking on the bottom fork's own label like a duplicate. Such edges now
+  exit the source's east side and descend the right-hand side rail (the
+  same rail back-edges use), entering the target's east edge with `<`;
+  the label rides the rail at the source's row. The three-segment fallback
+  is unchanged for edges the rail cannot serve, and diamonds now fill
+  their interior at the NodeContent layer exactly like rectangles, so a
+  fallback line routed behind a diamond is hidden too.
+
+### Changed
+
+- `layout::routing` split: side-rail geometry (`side_route_segments`,
+  `forward_edge_side_routed`) moved to a new `layout::side_route` module;
+  the rail column now derives from the exported `RAIL_OFFSET` constant so
+  routing and canvas-width reservations share one source.
+
 ## [0.2.1] — 2026-09-02
 
 A comprehensive label-layout overhaul: no label character is ever silently
