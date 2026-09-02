@@ -3,8 +3,9 @@
 //! Nodes support three shapes: `Rectangle`, `Rounded`, and `Diamond`
 //! (decision). The layout engine stacks nodes vertically and routes
 //! connectors orthogonally. Forward edges flow top-to-bottom; back-edges
-//! (target above source) route via a side corridor to the right of every
-//! node so they do not punch through intermediates.
+//! (target above source) and forward edges whose every V-H-V corridor
+//! row would pierce an obstacle both route via a side corridor to the
+//! right of every node so they do not punch through intermediates.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -14,8 +15,9 @@ use crate::error::{FigoError, Result};
 use crate::layout::connector::Connector;
 use crate::layout::geom::{Anchor, Rect};
 use crate::layout::{
-    RidingCandidate, RidingLabel, allocate_riding_rows, beside_line_label_avail,
-    corridor_label_avail, corridor_label_block_top, h_corridor_len, riding_placement_cols,
+    RAIL_OFFSET, RidingCandidate, RidingLabel, allocate_riding_rows, beside_line_label_avail,
+    corridor_label_avail, corridor_label_block_top, forward_edge_side_routed, h_corridor_len,
+    riding_placement_cols, side_route_column,
 };
 use crate::style::{BorderStyle, Charset, LineStyle};
 use crate::text::wrap_label;
@@ -85,6 +87,34 @@ const AUTO_STRIDE_ROWS: usize = 4;
 /// room, one stride, and slack). Shared by the canvas-height
 /// calculation and the riding row limit so the two never diverge.
 const CANVAS_BOTTOM_MARGIN: usize = 2 + AUTO_STRIDE_ROWS + 4;
+
+/// Floor for the right-hand reservation beyond the widest node: always
+/// room for the side rail (`RAIL_OFFSET`) plus a short label. Also the
+/// provisional width headroom used to pin the rail column before the
+/// final `side_room_for_side_routes` is known (see `render_positions`).
+const MIN_SIDE_ROOM: usize = 6;
+
+/// Resolve a connection's two endpoint nodes, `None` when either id
+/// dangles (no matching node). Shared by every pre-pass and Phase 2 in
+/// `render_positions` so endpoint resolution cannot drift.
+fn conn_endpoints<'a>(
+    pos_map: &HashMap<&str, &'a PositionedNode>,
+    conn: &FlowConnection,
+) -> Option<(&'a PositionedNode, &'a PositionedNode)> {
+    Some((pos_map.get(conn.from.as_str()).copied()?, pos_map.get(conn.to.as_str()).copied()?))
+}
+
+/// Every node rect except the connection's two endpoints — the obstacle
+/// set a connector must avoid. Rect equality, not id equality: the
+/// layout never stacks two nodes on the same rect, and the riding
+/// pre-pass historically matched by rect.
+fn avoid_rects(
+    positions: &[PositionedNode],
+    from: &PositionedNode,
+    to: &PositionedNode,
+) -> Vec<Rect> {
+    positions.iter().map(|p| p.rect).filter(|r| *r != from.rect && *r != to.rect).collect()
+}
 
 impl Flowchart {
     /// Create a new flowchart builder.
@@ -452,8 +482,37 @@ impl Flowchart {
         let all_rects: Vec<Rect> = positions.iter().map(|p| p.rect).collect();
 
         let max_w = positions.iter().map(|p| p.rect.right()).max().unwrap_or(0).max(self.width);
-        // Reserve room on the right for back-edge side corridors and labels.
-        let side_room = self.side_room_for_back_edges(positions);
+        // Forward edges whose every V-H-V corridor row would pierce an
+        // obstacle route around the right side on the same rail the
+        // back-edges use. Decide them up front: the fork-sibling and
+        // riding pre-passes below must ignore them (their labels ride
+        // the rail, not the fork), and their labels widen the right
+        // reservation. `side_room_for_side_routes` never returns less
+        // than MIN_SIDE_ROOM, so the provisional width below never
+        // clamps the rail column — it stays at max_right + RAIL_OFFSET
+        // here and when Phase 2 recomputes it against the final canvas.
+        let rail_x = side_route_column(&all_rects, max_w + MIN_SIDE_ROOM);
+        let mut side_routed: HashSet<usize> = HashSet::new();
+        let mut side_label_w = 0usize;
+        for (ci, conn) in self.connections.iter().enumerate() {
+            let Some((from, to)) = conn_endpoints(&pos_map, conn) else {
+                continue;
+            };
+            if from.rect.y >= to.rect.y {
+                continue; // back-edges already take the side rail
+            }
+            let avoid = avoid_rects(positions, from, to);
+            if forward_edge_side_routed(&from.rect, &to.rect, &avoid, rail_x) {
+                side_routed.insert(ci);
+                if let Some(label) = &conn.label {
+                    // Wrapped width bounded by self.width, matching the
+                    // back-edge reservation below.
+                    side_label_w = side_label_w.max(wrap_label(label, self.width).max_width);
+                }
+            }
+        }
+        // Reserve room on the right for side corridors and their labels.
+        let side_room = self.side_room_for_side_routes(positions, side_label_w);
         let total_w = max_w + side_room;
 
         // Fork-riding aggregation: a purely vertical forward connector
@@ -466,14 +525,15 @@ impl Flowchart {
         // connector's label can ride the exclusive leg segment below
         // every sibling block instead.
         let mut fork_sibs: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
-        for conn in &self.connections {
-            let (Some(&from), Some(&to)) =
-                (pos_map.get(conn.from.as_str()), pos_map.get(conn.to.as_str()))
-            else {
+        for (ci, conn) in self.connections.iter().enumerate() {
+            let Some((from, to)) = conn_endpoints(&pos_map, conn) else {
                 continue;
             };
             if from.rect.y >= to.rect.y {
                 continue; // back-edge: side route, never meets the fork
+            }
+            if side_routed.contains(&ci) {
+                continue; // side rail: its label rides the rail, not the fork
             }
             let from_cx = from.rect.x + from.rect.w / 2;
             let to_cx = to.rect.x + to.rect.w / 2;
@@ -509,13 +569,14 @@ impl Flowchart {
         let mut riding: HashMap<usize, RidingLabel> = HashMap::new();
         let mut riding_bottom = 0usize;
         for (ci, conn) in self.connections.iter().enumerate() {
-            let (Some(&from), Some(&to)) =
-                (pos_map.get(conn.from.as_str()), pos_map.get(conn.to.as_str()))
-            else {
+            let Some((from, to)) = conn_endpoints(&pos_map, conn) else {
                 continue;
             };
             if from.rect.y >= to.rect.y {
                 continue; // back-edge: side route, never rides
+            }
+            if side_routed.contains(&ci) {
+                continue; // side rail: label drawn by render_side_route
             }
             let Some(label) = conn.label.as_deref() else { continue };
             let from_cx = from.rect.x + from.rect.w / 2;
@@ -524,11 +585,7 @@ impl Flowchart {
                 continue; // corridor connector: label embeds in the corridor
             }
             let Some(sibs) = fork_sibs.get(conn.from.as_str()) else { continue };
-            let boxes: Vec<Rect> = positions
-                .iter()
-                .map(|p| p.rect)
-                .filter(|r| *r != from.rect && *r != to.rect)
-                .collect();
+            let boxes = avoid_rects(positions, from, to);
             let placement = place_riding_label(&RidingRequest {
                 label,
                 from_rect: from.rect,
@@ -561,9 +618,7 @@ impl Flowchart {
         // Phase 2 — connectors. Riding directives come from the
         // pre-pass above (one placement per rider, blockers included).
         for (ci, conn) in self.connections.iter().enumerate() {
-            let (Some(&from), Some(&to)) =
-                (pos_map.get(conn.from.as_str()), pos_map.get(conn.to.as_str()))
-            else {
+            let Some((from, to)) = conn_endpoints(&pos_map, conn) else {
                 continue;
             };
             // Treat same-layer connections as back-edges so they route around
@@ -577,12 +632,7 @@ impl Flowchart {
                 LineStyle::Simple,
                 self.charset,
             )
-            .with_avoids(
-                positions
-                    .iter()
-                    .filter(|p| p.node.id != from.node.id && p.node.id != to.node.id)
-                    .map(|p| p.rect),
-            )
+            .with_avoids(avoid_rects(positions, from, to))
             .with_user_width(self.width);
             if let Some(label) = &conn.label {
                 connector.label = Some(label.clone());
@@ -590,7 +640,7 @@ impl Flowchart {
             if let Some(rl) = riding.get(&ci) {
                 connector = connector.with_riding_label(*rl);
             }
-            if is_back {
+            if is_back || side_routed.contains(&ci) {
                 let w = canvas.width();
                 connector.render_side_route(&mut canvas, &all_rects, w);
             } else {
@@ -609,6 +659,9 @@ impl Flowchart {
     fn draw_node(&self, canvas: &mut Canvas, pos: &PositionedNode) {
         match pos.node.shape {
             NodeShape::Diamond => {
+                // draw_diamond fills the interior at NodeContent, hiding
+                // connectors routed behind the node exactly like the
+                // rectangle fill below.
                 draw_diamond(canvas, pos.rect.x, pos.rect.y, pos.rect.w, pos.rect.h, self.charset);
             }
             NodeShape::Rounded | NodeShape::Rectangle => {
@@ -653,13 +706,22 @@ impl Flowchart {
         }
     }
 
-    /// Compute the extra columns needed on the right for back-edge side
-    /// corridors. Reserves enough room for the corridor plus the longest
-    /// back-edge label placed to the right of the corridor.
-    fn side_room_for_back_edges(&self, positions: &[PositionedNode]) -> usize {
+    /// Compute the extra columns needed on the right for side corridors
+    /// — back-edges and side-routed forward edges share one rail — and
+    /// their labels: the rail offset plus one gap cell, plus the longest
+    /// wrapped label placed to the right of the rail. `extra_label_w`
+    /// carries the side-routed forward edges' wrapped label width (the
+    /// back-edge scan below cannot see those — whether an edge
+    /// side-routes is only known after positions, in
+    /// `render_positions`).
+    fn side_room_for_side_routes(
+        &self,
+        positions: &[PositionedNode],
+        extra_label_w: usize,
+    ) -> usize {
         let id_y: HashMap<&str, usize> =
             positions.iter().map(|p| (p.node.id.as_str(), p.rect.y)).collect();
-        let max_label_len = self
+        let back_edge_label_w = self
             .connections
             .iter()
             .filter(|c| {
@@ -680,7 +742,7 @@ impl Flowchart {
             })
             .max()
             .unwrap_or(0);
-        (3 + max_label_len).max(6)
+        (RAIL_OFFSET + 1 + back_edge_label_w.max(extra_label_w)).max(MIN_SIDE_ROOM)
     }
 
     pub fn render(&self) -> Result<String> {
@@ -1233,17 +1295,12 @@ mod tests {
         insta::assert_snapshot!(out);
     }
 
-    #[test]
-    fn test_converging_detoured_edges_keep_labels() {
-        // A wide blocker under two diamonds forces their long "no" edges
-        // to a shared fail box (in another column) to detour below every
-        // obstacle — landing exactly on the bottom diamond's natural fork
-        // row. The superposed corridors used to overwrite each other's
-        // labels (only one "no" of three survived, the edges looked
-        // silently dropped). Each converging edge must keep its own
-        // corridor row so all three labels render.
+    /// A wide blocker under two diamonds forces their long "no" edges to a
+    /// shared fail box (in another column): the blocker stops the natural
+    /// corridor, and the vertical chain stops the below-everything detour.
+    fn converging_flowchart() -> Flowchart {
         let wide: String = "w".repeat(40);
-        let fc = Flowchart::new(100, Charset::Ascii)
+        Flowchart::new(100, Charset::Ascii)
             .add_node(FlowNode {
                 id: "d1".into(),
                 label: "d1?".into(),
@@ -1286,11 +1343,90 @@ mod tests {
             .connect("d3", "pass", Some("yes"))
             .connect("d3", "fail", Some("no"))
             .connect("d1", "fail", Some("no"))
-            .connect("d2", "fail", Some("no"));
+            .connect("d2", "fail", Some("no"))
+    }
+
+    #[test]
+    fn test_converging_detoured_edges_keep_labels() {
+        // The two long "no" edges cannot take any V-H-V corridor row
+        // cleanly, so they side-route around the right; the bottom
+        // diamond keeps its natural fork corridor. All three "no"
+        // labels must render on separate rows — historically the
+        // superposed bottom corridors overwrote each other's labels
+        // and the edges looked silently dropped.
+        let fc = converging_flowchart();
         let out = fc.build().unwrap();
         assert_eq!(out.matches("no").count(), 3, "all three no-edge labels must render:\n{out}");
         assert_eq!(out.matches("yes").count(), 1, "the yes label must render:\n{out}");
         let rows_with_no = out.lines().filter(|l| l.contains("no")).count();
         assert_eq!(rows_with_no, 3, "the three no labels must sit on separate rows:\n{out}");
+    }
+
+    #[test]
+    fn test_long_forward_edge_side_routes_clean() {
+        // A forward edge whose every V-H-V corridor row pierces an
+        // obstacle (the wide box blocks the target column, the chain
+        // blocks the source column) must route around the right side:
+        // exit the source's east side, descend the side rail, enter the
+        // target's east edge with `<`. The three-segment fallback used
+        // to cut a vertical line straight through the d2/d3 diamonds —
+        // visible because diamonds have no interior fill — and drag the
+        // branch labels to the bottom corridor, stacking them on d3's
+        // own fork like duplicates.
+        let fc = converging_flowchart();
+        let out = fc.build().unwrap();
+        // No diamond is pierced: the spine rows `/|\` and `\|/` are gone.
+        assert!(!out.contains("/|\\"), "vertical line pierces a diamond top:\n{out}");
+        assert!(!out.contains("\\|/"), "vertical line pierces a diamond bottom:\n{out}");
+        // The two long edges exit east at their source's row and keep
+        // their labels on the side rail (`...--+no`), not on the bottom.
+        let rail_rows = out.lines().filter(|l| l.contains("+no")).count();
+        assert_eq!(rail_rows, 2, "two side-rail no labels expected:\n{out}");
+        // The side route enters the fail box from the east with `<`.
+        assert!(out.contains("fail |<"), "east entry into fail missing:\n{out}");
+    }
+
+    #[test]
+    fn test_fallback_pierce_hidden_by_diamond_fill() {
+        // When even the side route is blocked (BLK sits east of T at T's
+        // row, so the rail's entry H would cut through it), the straight
+        // vertical fallback still runs the line through the diamond
+        // standing in its column. The diamond's interior fill must hide
+        // the line — the same treatment rectangles already get.
+        let fc = Flowchart::new(60, Charset::Ascii)
+            .layout(Layout::Manual)
+            .add_node(FlowNode {
+                id: "s".into(),
+                label: "S".into(),
+                shape: NodeShape::Rectangle,
+                position: Some((15, 1)),
+            })
+            .add_node(FlowNode {
+                id: "x".into(),
+                label: "X?".into(),
+                shape: NodeShape::Diamond,
+                position: Some((15, 6)),
+            })
+            .add_node(FlowNode {
+                id: "t".into(),
+                label: "T".into(),
+                shape: NodeShape::Rectangle,
+                position: Some((15, 12)),
+            })
+            .add_node(FlowNode {
+                id: "blk".into(),
+                label: "BLK".into(),
+                shape: NodeShape::Rectangle,
+                position: Some((26, 12)),
+            })
+            .connect("s", "t", Some("edge label"))
+            .connect("s", "blk", None);
+        let out = fc.build().unwrap();
+        assert!(out.contains("X?"), "diamond missing:\n{out}");
+        assert!(
+            !out.contains("/|\\") && !out.contains("\\|/"),
+            "fallback line shows through the diamond interior:\n{out}"
+        );
+        assert!(out.contains("edge label"), "edge label lost:\n{out}");
     }
 }

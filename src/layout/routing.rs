@@ -71,12 +71,19 @@ pub fn detoured_mid_x(avoid: &[Rect]) -> usize {
     max_right + 1
 }
 
+/// The side rail column sits this many cells right of the rightmost
+/// node; side-route labels start one cell right of the rail, so
+/// width reservations derive from the same constant (see
+/// `side_route_column` and `Flowchart::side_room_for_side_routes`).
+pub const RAIL_OFFSET: usize = 2;
+
 /// A vertical-corridor column to the right of all rectangles, used to
-/// route back-edges around intermediate nodes. Returns the column index
-/// two cells right of the rightmost rect, clamped to the canvas width.
+/// route back-edges and side-routed forward edges around intermediate
+/// nodes. Returns the column index `RAIL_OFFSET` cells right of the
+/// rightmost rect, clamped to the canvas width.
 pub fn side_route_column(all: &[Rect], canvas_w: usize) -> usize {
     let max_right = all.iter().map(|r| r.right()).max().unwrap_or(0);
-    let candidate = max_right + 2;
+    let candidate = max_right + RAIL_OFFSET;
     candidate.min(canvas_w.saturating_sub(1).max(max_right + 1))
 }
 
@@ -186,6 +193,34 @@ pub fn build_three_h_segment(
         segs.push(Segment::H { x: mid_x, y: ty, len: tx - mid_x + 1 });
     }
     segs
+}
+
+/// The V-H-V path a vertical-flow connector takes: a straight run when
+/// the columns align, else the natural corridor row when it avoids every
+/// obstacle, else the below-everything detour row. The detour row only
+/// guarantees a clear horizontal corridor — its vertical legs may still
+/// pierce obstacles standing in the source or target column (callers
+/// that can route around the side detect this with
+/// [`crate::layout::side_route::forward_edge_side_routed`]).
+pub fn vertical_flow_path(
+    source: (usize, usize),
+    target: (usize, usize),
+    src: &Rect,
+    tgt: &Rect,
+    avoid: &[Rect],
+) -> Vec<Segment> {
+    let (sx, sy) = source;
+    let (tx, ty) = target;
+    if sx == tx {
+        return straight_vertical(sx, sy, ty);
+    }
+    let mid_y = natural_mid_y(sy, ty, src, tgt);
+    let path = build_three_segment(sx, sy, tx, ty, mid_y);
+    if !path_intersects_any(&path, avoid) {
+        return path;
+    }
+    let safe_y = detoured_mid_y(sy, ty, avoid, src, tgt);
+    build_three_segment(sx, sy, tx, ty, safe_y)
 }
 
 #[cfg(test)]

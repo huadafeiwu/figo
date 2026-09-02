@@ -68,7 +68,11 @@ pub fn node_dims(label: &str, shape: NodeShape, total_width: usize) -> (usize, u
 /// Draw a diamond (decision node) border at `(x, y)` with the given
 /// width and height (as returned by [`node_dims`]). The left/right
 /// slashes are drawn at `Layer::NodeBorder` so connectors routed
-/// underneath are clipped cleanly.
+/// underneath are clipped cleanly, and the interior is filled at
+/// `Layer::NodeContent` so a line routed behind the diamond is hidden —
+/// the same treatment rectangles get. When even the side route is
+/// blocked, the vertical fallback can still cut through a node;
+/// rectangles hide the line by fill, and the diamond must too.
 pub fn draw_diamond(
     canvas: &mut Canvas,
     x: usize,
@@ -100,16 +104,25 @@ pub fn draw_diamond(
         } else if row == last {
             // Bottom apex.
             canvas.put_layered(mid_x, cy, 'v', Layer::NodeBorder, None);
-        } else if row <= half_h {
-            // Upper half: widen from the top apex toward the middle.
-            let off = row;
-            canvas.put_layered(mid_x - off, cy, '/', Layer::NodeBorder, None);
-            canvas.put_layered(mid_x + off, cy, '\\', Layer::NodeBorder, None);
         } else {
-            // Lower half: narrow from the middle toward the bottom apex.
-            let off = last - row;
-            canvas.put_layered(mid_x - off, cy, '\\', Layer::NodeBorder, None);
-            canvas.put_layered(mid_x + off, cy, '/', Layer::NodeBorder, None);
+            let off = row.min(last - row);
+            if row <= half_h {
+                // Upper half: widen from the top apex toward the middle.
+                canvas.put_layered(mid_x - off, cy, '/', Layer::NodeBorder, None);
+                canvas.put_layered(mid_x + off, cy, '\\', Layer::NodeBorder, None);
+            } else {
+                // Lower half: narrow from the middle toward the bottom apex.
+                canvas.put_layered(mid_x - off, cy, '\\', Layer::NodeBorder, None);
+                canvas.put_layered(mid_x + off, cy, '/', Layer::NodeBorder, None);
+            }
+            // Fill the interior span between the two border slashes.
+            canvas.put_horizontal_layered(
+                mid_x - off + 1,
+                cy,
+                2 * off - 1,
+                ' ',
+                Layer::NodeContent,
+            );
         }
     }
 }

@@ -10,6 +10,7 @@
 //! - [`connector`]: `Connector` and orthogonal routing helpers
 //! - [`riding`]: riding-label primitives (wrap ladder, directive, cluster rows)
 //! - [`routing`]: shared routing geometry helpers (`natural_mid_y`, etc.)
+//! - [`side_route`]: right-hand rail geometry shared by obstacle checks and drawing
 //! - [`sizing`]: column distribution, fit-to-width helpers
 
 pub mod connector;
@@ -17,6 +18,7 @@ pub mod geom;
 pub mod node;
 pub mod riding;
 pub mod routing;
+pub mod side_route;
 pub mod sizing;
 
 // Re-exports for diagram internals.
@@ -28,8 +30,9 @@ pub use riding::{
     corridor_label_avail, corridor_label_block_top, riding_placement_cols,
 };
 pub use routing::{
-    Segment, build_three_h_segment, build_three_segment, detoured_mid_x, detoured_mid_y,
-    h_corridor_len, natural_mid_y, path_intersects_any, side_route_column, snap_outside,
-    straight_vertical,
+    RAIL_OFFSET, Segment, build_three_h_segment, build_three_segment, detoured_mid_x,
+    detoured_mid_y, h_corridor_len, natural_mid_y, path_intersects_any, side_route_column,
+    snap_outside, straight_vertical, vertical_flow_path,
 };
+pub use side_route::{forward_edge_side_routed, side_route_segments};
 pub use sizing::{column_starts, distribute, fit_to_width, trim_trailing};

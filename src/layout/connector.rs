@@ -22,8 +22,9 @@ use super::riding::{
 };
 use super::routing::{
     Segment, build_three_h_segment, build_three_segment, detoured_mid_x, detoured_mid_y,
-    natural_mid_y, path_intersects_any, side_route_column, snap_outside, straight_vertical,
+    path_intersects_any, side_route_column, snap_outside, straight_vertical, vertical_flow_path,
 };
+use super::side_route::side_route_segments;
 
 /// Pick the arrowhead glyph that points inward along the source's
 /// dominant anchor direction.
@@ -210,43 +211,22 @@ impl Connector {
         }
     }
 
-    /// Render a back-edge via a side corridor to the right of every
-    /// node, so it does not punch through intermediates. The path is:
-    /// H out from the source's right edge → V along the side corridor →
-    /// H into the target's right edge. The arrowhead points LEFT into the
-    /// target, avoiding the top of the target where forward edges land.
+    /// Render an edge via a side corridor to the right of every node, so
+    /// it does not punch through intermediates: H out from the source's
+    /// right edge → V along the side rail → H into the target's right
+    /// edge, with the arrowhead pointing LEFT into the target. Used both
+    /// for back-edges and for forward edges whose every V-H-V corridor
+    /// row would pierce an obstacle (see `forward_edge_side_routed`).
+    /// The path geometry comes from `side_route_segments` — the same
+    /// source the obstacle check reads — so the two can never drift.
     pub fn render_side_route(&self, canvas: &mut Canvas, all_rects: &[Rect], canvas_w: usize) {
         let route_x = side_route_column(all_rects, canvas_w);
-        let src_right = self.source_rect.right();
         let src_cy = self.source_rect.cy();
         let tgt_right = self.target_rect.right();
         let tgt_cy = self.target_rect.cy();
-        let h_ch = horizontal_line_glyph(self.style, self.charset);
-        let v_ch = vertical_line_glyph(self.style, self.charset);
 
-        // H out from the source's right edge to the side corridor.
-        if route_x > src_right {
-            canvas.put_horizontal_layered(
-                src_right,
-                src_cy,
-                route_x - src_right,
-                h_ch,
-                Layer::Connector,
-            );
-        }
-        // V along the side corridor between source and target rows.
-        let (lo, hi) = if src_cy < tgt_cy { (src_cy, tgt_cy) } else { (tgt_cy, src_cy) };
-        canvas.put_vertical_layered(route_x, lo, hi - lo + 1, v_ch, Layer::Connector);
-        // H from the side corridor into the target's right edge.
-        if route_x > tgt_right {
-            canvas.put_horizontal_layered(
-                tgt_right,
-                tgt_cy,
-                route_x - tgt_right,
-                h_ch,
-                Layer::Connector,
-            );
-        }
+        let path = side_route_segments(&self.source_rect, &self.target_rect, route_x);
+        self.render_segments(canvas, &path);
         // Arrowhead pointing LEFT into the target's right edge.
         let head = arrow_from_path(-1, 0, self.style, self.charset);
         canvas.put_layered(tgt_right, tgt_cy, head, Layer::ConnectorEnd, None);
@@ -293,18 +273,18 @@ impl Connector {
         let same_x = sx == tx;
         let same_y = sy == ty;
 
-        // Vertical-axis flow (south → north, or north → south).
+        // Vertical-axis flow (south → north, or north → south). The
+        // shared `vertical_flow_path` is also what
+        // `forward_edge_side_routed` inspects, so flowchart's decision
+        // to side-route around obstacles matches this path exactly.
         if (from_south && to_north) || (from_north && to_south) {
-            if same_x {
-                return straight_vertical(sx, sy, ty);
-            }
-            let mid_y = natural_mid_y(sy, ty, &self.source_rect, &self.target_rect);
-            let path = build_three_segment(sx, sy, tx, ty, mid_y);
-            if !path_intersects_any(&path, &self.avoid) {
-                return path;
-            }
-            let safe_y = detoured_mid_y(sy, ty, &self.avoid, &self.source_rect, &self.target_rect);
-            return build_three_segment(sx, sy, tx, ty, safe_y);
+            return vertical_flow_path(
+                (sx, sy),
+                (tx, ty),
+                &self.source_rect,
+                &self.target_rect,
+                &self.avoid,
+            );
         }
 
         // Horizontal-axis flow (east ↔ west).
