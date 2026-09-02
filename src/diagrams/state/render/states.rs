@@ -14,6 +14,14 @@ use crate::render::node::Node;
 use crate::render::surface::Surface;
 use crate::render::widget::{LayoutContext, MeasureContext, PaintContext, Rect, Widget};
 use crate::style::{BorderStyle, Charset, HAlign, VAlign};
+use crate::text::wrap_label;
+
+/// The state's label wrapped to its box interior. Derived from the same
+/// `wrap_label` call `state_size` sized the box with, so the drawn
+/// lines and the box dimensions cannot drift apart.
+fn label_lines(layout: &StateLayout) -> Vec<String> {
+    wrap_label(&layout.label, layout.rect.w.saturating_sub(2).max(2)).lines
+}
 
 /// Draw the initial-state pseudo arrow (`*────>`) into the first state.
 pub(super) fn draw_initial_arrow(
@@ -72,7 +80,7 @@ fn draw_simple_state(
 ) {
     let mut node = Node::new(ctx.charset)
         .border(BorderStyle::Rounded)
-        .content(vec![layout.label.clone()])
+        .content(label_lines(layout))
         .align(HAlign::Center, VAlign::Middle);
     node.measure(measure_ctx);
     node.layout(layout_ctx, layout.rect);
@@ -101,9 +109,13 @@ fn draw_accepting_state(
         for ry in 1..ih.saturating_sub(1) {
             surface.put_horizontal(ix + 1, iy + ry, iw.saturating_sub(2), ' ', Layer::NodeContent);
         }
-        // Re-draw the label at the center.
-        let lx = layout.rect.x + (layout.rect.w.saturating_sub(layout.label.width())) / 2;
-        let ly = layout.rect.y + layout.rect.h / 2;
-        surface.put_str_layered(lx, ly, &layout.label, Layer::NodeContent);
+        // Re-draw the label lines at the center.
+        let lines = label_lines(layout);
+        let top = layout.rect.y + (layout.rect.h.saturating_sub(lines.len().max(1))) / 2;
+        for (i, line) in lines.iter().enumerate() {
+            let lw = UnicodeWidthStr::width(line.as_str());
+            let lx = layout.rect.x + (layout.rect.w.saturating_sub(lw)) / 2;
+            surface.put_str_layered(lx, top + i, line, Layer::NodeContent);
+        }
     }
 }

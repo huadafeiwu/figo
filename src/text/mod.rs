@@ -175,6 +175,15 @@ pub struct WrappedLabel {
     pub max_width: usize,
 }
 
+/// Aesthetic box-width budget for diagram node labels, in percent of
+/// the canvas width (user-approved 2026-09-02). Flowchart nodes and
+/// state boxes wrap their labels at this fraction of the user-chosen
+/// width: a box wider than this pushes the rightmost node, the side
+/// rail, and every long line far right, so long step descriptions wrap
+/// inside a narrower, taller box instead. Deliberately a proportion of
+/// the user's width, not a constant — the budget scales with the canvas.
+pub const NODE_WRAP_WIDTH_PCT: usize = 40;
+
 /// Wrap a label to `max_width` display columns.
 ///
 /// This is the standard entry point for diagram label wrapping: it

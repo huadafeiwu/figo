@@ -20,7 +20,7 @@ use crate::layout::{
     riding_placement_cols, side_route_column,
 };
 use crate::style::{BorderStyle, Charset, LineStyle};
-use crate::text::wrap_label;
+use crate::text::{NODE_WRAP_WIDTH_PCT, wrap_label};
 use unicode_width::UnicodeWidthStr;
 
 use super::flowchart_riding::{PlacedRider, RidingRequest, place_riding_label};
@@ -169,6 +169,12 @@ impl Flowchart {
         self.render_positions(&positions)
     }
 
+    /// Node box-width budget: the aesthetic `NODE_WRAP_WIDTH_PCT`% of
+    /// the canvas width — the cap `node_dims` wraps labels to.
+    fn node_wrap_cap(&self) -> usize {
+        self.width * NODE_WRAP_WIDTH_PCT / 100
+    }
+
     fn layout_manual(&self) -> Result<Vec<PositionedNode>> {
         let mut out = Vec::new();
         for node in &self.nodes {
@@ -178,7 +184,7 @@ impl Flowchart {
                     node.id
                 ))
             })?;
-            let (w, h) = node_dims(&node.label, node.shape, self.width);
+            let (w, h) = node_dims(&node.label, node.shape, self.node_wrap_cap());
             out.push(PositionedNode { node: node.clone(), rect: Rect::new(pos.0, pos.1, w, h) });
         }
         Ok(out)
@@ -186,11 +192,11 @@ impl Flowchart {
 
     fn layout_auto(&self) -> Result<Vec<PositionedNode>> {
         let dims: Vec<(usize, usize)> =
-            self.nodes.iter().map(|n| node_dims(&n.label, n.shape, self.width)).collect();
+            self.nodes.iter().map(|n| node_dims(&n.label, n.shape, self.node_wrap_cap())).collect();
         let adj = self.build_adjacency();
         let (order, back_edges) = self.detect_back_edges(&adj);
         let layers = self.compute_layers(&adj, &order, &back_edges);
-        self.assign_positions(&dims, &layers)
+        self.assign_positions(dims, &layers)
     }
 
     /// Build adjacency list by node index from the declared connections.
@@ -273,9 +279,11 @@ impl Flowchart {
     }
 
     /// Group nodes by layer and compute their (x, y) coordinates.
+    /// `dims` is taken by value: same-layer siblings that overflow the
+    /// canvas width have their boxes re-wrapped in place (see Pass 1).
     fn assign_positions(
         &self,
-        dims: &[(usize, usize)],
+        mut dims: Vec<(usize, usize)>,
         layers: &[usize],
     ) -> Result<Vec<PositionedNode>> {
         let max_layer = *layers.iter().max().unwrap_or(&0);
@@ -330,8 +338,33 @@ impl Flowchart {
                     }
                 }
             }
-            let total_w: usize = layer_indices.iter().map(|&idx| dims[idx].0).sum::<usize>()
+            // Same-layer boxes share the canvas width: when their boxes
+            // plus gaps overflow it, re-wrap each box to an equal share
+            // instead of letting the layer widen the whole canvas and
+            // stretch every long edge. Boxes narrower than their share
+            // keep their size; diamonds never wrap (see `node_dims`), so
+            // a layer they dominate still widens the canvas as before.
+            let n = layer_indices.len();
+            let mut total_w: usize = layer_indices.iter().map(|&idx| dims[idx].0).sum::<usize>()
                 + layer_indices.len().saturating_sub(1) * gap_x;
+            if n > 1 && total_w > self.width {
+                let share = self.width.saturating_sub((n - 1) * gap_x) / n;
+                let mut rewrapped = false;
+                for &idx in layer_indices {
+                    if dims[idx].0 > share {
+                        let node = &self.nodes[idx];
+                        let capped = node_dims(&node.label, node.shape, share);
+                        if capped.0 < dims[idx].0 {
+                            dims[idx] = capped;
+                            rewrapped = true;
+                        }
+                    }
+                }
+                if rewrapped {
+                    total_w = layer_indices.iter().map(|&idx| dims[idx].0).sum::<usize>()
+                        + layer_indices.len().saturating_sub(1) * gap_x;
+                }
+            }
             let start_x = if layer_indices.len() == 1 {
                 (self.width / 2).saturating_sub(dims[layer_indices[0]].0 / 2)
             } else {
@@ -1428,5 +1461,84 @@ mod tests {
             "fallback line shows through the diamond interior:\n{out}"
         );
         assert!(out.contains("edge label"), "edge label lost:\n{out}");
+    }
+
+    #[test]
+    fn test_node_label_wraps_at_aesthetic_budget() {
+        // A node label wider than 40% of the canvas wraps instead of
+        // stretching its box to a single mega-wide line — a wide box
+        // pushes the rightmost node, the side rail, and every east-exit
+        // line far right (user-approved aesthetic budget, 2026-09-02).
+        // Before this, a 52-column label in a 100-wide canvas stayed on
+        // one line inside a 56-column box.
+        let fc = Flowchart::new(100, Charset::Ascii)
+            .add_node(FlowNode {
+                id: "a".into(),
+                label: "alpha beta gamma delta epsilon zeta eta theta iota kappa".into(),
+                shape: NodeShape::Rectangle,
+                position: None,
+            })
+            .add_node(FlowNode {
+                id: "b".into(),
+                label: "b".into(),
+                shape: NodeShape::Rectangle,
+                position: None,
+            })
+            .connect("a", "b", None);
+        let out = fc.build().unwrap();
+        // The box row (borders included) fits the 40% budget.
+        let box_row = out.lines().find(|l| l.contains("alpha")).unwrap();
+        assert!(
+            UnicodeWidthStr::width(box_row.trim()) <= 40,
+            "box row is {} cols, exceeds the 40% budget:\n{out}",
+            UnicodeWidthStr::width(box_row.trim())
+        );
+        // The label wrapped onto separate rows — nothing lost.
+        let alpha_row = out.lines().position(|l| l.contains("alpha"));
+        let kappa_row = out.lines().position(|l| l.contains("kappa"));
+        assert_ne!(alpha_row, kappa_row, "label did not wrap:\n{out}");
+        assert!(out.contains("epsilon") && out.contains("theta"), "label lost:\n{out}");
+    }
+
+    #[test]
+    fn test_same_layer_labels_wrap_when_layer_overflows_width() {
+        // Same-layer siblings share the canvas width: when their boxes
+        // plus gaps overflow it, each box re-wraps to an equal share
+        // instead of widening the whole canvas and stretching every
+        // long edge. Three 38-column siblings in a 110-wide canvas used
+        // to render as a 126-column layer.
+        let label = "aaaa bbbb cccc dddd eeee ffff gggg";
+        let mut fc = Flowchart::new(110, Charset::Ascii).add_node(FlowNode {
+            id: "f".into(),
+            label: "f".into(),
+            shape: NodeShape::Diamond,
+            position: None,
+        });
+        for id in ["c1", "c2", "c3"] {
+            fc = fc.add_node(FlowNode {
+                id: id.into(),
+                label: label.into(),
+                shape: NodeShape::Rectangle,
+                position: None,
+            });
+        }
+        let fc = fc.connect("f", "c1", None).connect("f", "c2", None).connect("f", "c3", None);
+        let out = fc.build().unwrap();
+        // All three labels wrapped: the last word never shares a row
+        // with the first word.
+        assert!(
+            !out.lines().any(|l| l.contains("aaaa") && l.contains("gggg")),
+            "labels did not wrap:\n{out}"
+        );
+        // All three children sit side by side on the same rows.
+        assert!(
+            out.lines().any(|l| l.matches("aaaa").count() == 3),
+            "siblings not laid out side by side:\n{out}"
+        );
+        // No characters lost.
+        assert_eq!(out.matches("gggg").count(), 3, "wrapped lines lost:\n{out}");
+        // The layer fits the canvas instead of stretching past it.
+        let max_w = out.lines().map(UnicodeWidthStr::width).max().unwrap_or(0);
+        assert!(max_w <= 110, "layer content is {max_w} cols wide:\n{out}");
     }
 }

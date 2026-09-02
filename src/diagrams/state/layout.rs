@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 use crate::diagrams::state::sugiyama;
 use crate::diagrams::state::types::{StateNode, StateType, Transition};
 use crate::render::widget::{Rect, Size};
+use crate::text::{NODE_WRAP_WIDTH_PCT, wrap_label};
 use unicode_width::UnicodeWidthStr;
 
 /// Layout information for a single state.
@@ -47,12 +48,27 @@ impl Default for LayoutParams {
     }
 }
 
-/// State size in cells (width, height). Width depends on label length.
-fn state_size(label: &str, st: StateType, min_w: usize, base_h: usize, extra_h: usize) -> Size {
-    let w = (label.width() + 4).max(min_w);
+/// State size in cells (width, height). Width follows the label up to
+/// the aesthetic canvas budget (`NODE_WRAP_WIDTH_PCT`% of the canvas,
+/// the same rule flowchart nodes use); past it the label wraps and the
+/// box grows taller. Before this, state boxes never wrapped at all — a
+/// long label made an arbitrarily wide single-line box that could blow
+/// past the canvas itself.
+fn state_size(
+    label: &str,
+    st: StateType,
+    min_w: usize,
+    base_h: usize,
+    extra_h: usize,
+    cap: usize,
+) -> Size {
+    let label_w = label.width();
+    let w = (label_w + 4).min(cap).max(min_w);
+    let line_count =
+        if label_w + 4 > w { wrap_label(label, w.saturating_sub(2).max(2)).line_count } else { 1 };
     let h = match st {
-        StateType::Simple => base_h,
-        StateType::Accepting => base_h + extra_h,
+        StateType::Simple => base_h + line_count - 1,
+        StateType::Accepting => base_h + extra_h + line_count - 1,
     };
     Size::new(w, h)
 }
@@ -101,6 +117,7 @@ pub fn layout_states(
     }
 
     // Position nodes within each layer.
+    let wrap_cap = canvas_width * NODE_WRAP_WIDTH_PCT / 100;
     let sizes: Vec<Size> = states
         .iter()
         .map(|s| {
@@ -110,6 +127,7 @@ pub fn layout_states(
                 params.min_state_width,
                 params.state_height,
                 params.accepting_extra_height,
+                wrap_cap,
             )
         })
         .collect();

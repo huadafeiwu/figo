@@ -194,6 +194,38 @@ mod tests {
     }
 
     #[test]
+    fn test_state_label_wraps_at_aesthetic_budget() {
+        // A state label wider than 40% of the canvas wraps inside the
+        // box (same aesthetic budget as flowchart nodes, user-approved
+        // 2026-09-02). Before this, state boxes never wrapped at all —
+        // `state_size` gave a single-line box however long the label.
+        let out = StateDiagram::new(110, Charset::Ascii)
+            .add_state(StateNode {
+                id: "idle".into(),
+                label: "alpha beta gamma delta epsilon zeta eta theta".into(),
+                state_type: StateType::Simple,
+            })
+            .add_state(StateNode {
+                id: "done".into(),
+                label: "Done".into(),
+                state_type: StateType::Simple,
+            })
+            .initial("idle")
+            .add_transition("idle", "done", Some("finish"))
+            .build()
+            .unwrap();
+        // The second label row carries no initial-state arrow — its
+        // trimmed width is the box width (borders included).
+        let box_row = out.lines().find(|l| l.contains("theta")).unwrap();
+        let row_w = unicode_width::UnicodeWidthStr::width(box_row.trim());
+        assert!(row_w <= 44, "state box row is {row_w} cols, exceeds 40% budget:\n{out}");
+        let alpha_row = out.lines().position(|l| l.contains("alpha"));
+        let theta_row = out.lines().position(|l| l.contains("theta"));
+        assert_ne!(alpha_row, theta_row, "state label did not wrap:\n{out}");
+        assert!(out.contains("epsilon") && out.contains("theta"), "label lost:\n{out}");
+    }
+
+    #[test]
     fn test_accepting_state_has_double_border() {
         let out = StateDiagram::new(40, Charset::Unicode)
             .add_state(StateNode {
