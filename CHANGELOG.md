@@ -5,6 +5,34 @@ All notable changes to figo will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] — 2026-09-03
+
+### Fixed
+
+- **Flowcharts — same-layer sibling forks blur label attribution** — two
+  same-layer decision diamonds used to land every fork corridor on one shared
+  row (all natural rows are `sy + 1`): three superposed edges made each "no"
+  label ambiguous about which fork it belongs to. Same-gap sources whose
+  corridor spans strictly overlap now get successive rows (a true fork from
+  one source stays unified; converging corridors that merely touch at the
+  shared target leg keep sharing the row).
+- **Flowcharts — back-edge side-route exit ran through same-layer siblings**
+  — the side-route's horizontal exit never checked obstacles: the line hid
+  behind a sibling's fill and read as one connected line THROUGH it. Exit and
+  entry legs now shift to the nearest clear row just outside the endpoint
+  (above first, the hand-drawn convention for a back edge dodging a sibling;
+  diamond targets still receive the arrowhead at their center row only).
+- **Junction repair — parallel adjacent lines shattered into `+-+-+`** —
+  `connector_directions` counted any connector glyph as a vertical/horizontal
+  neighbour, so two parallel corridors on adjacent rows (or two vertical lines
+  one column apart) turned every shared cell into `+`, and the narrow-corridor
+  run cleanup then alternated them into `+-+-+` noise — the same failure that
+  sank the original converging-corridor stacking attempt. Direction detection
+  is now glyph-aware: a vertical connection requires a glyph with a vertical
+  arm. This also fixed two enshrined artifacts: the jog corner `+` sat one
+  cell off (09-dual-path), and adjacent rail+leg verticals rendered as an
+  alternating `+-` pattern instead of `||`.
+
 ## [0.2.2] — 2026-09-02
 
 ### Added
