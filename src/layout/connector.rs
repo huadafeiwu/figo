@@ -24,7 +24,7 @@ use super::routing::{
     Segment, build_three_h_segment, build_three_segment, detoured_mid_x, detoured_mid_y,
     path_intersects_any, side_route_column, snap_outside, straight_vertical, vertical_flow_path,
 };
-use super::side_route::side_route_segments;
+use super::side_route::side_route_segments_at;
 
 /// Pick the arrowhead glyph that points inward along the source's
 /// dominant anchor direction.
@@ -108,6 +108,11 @@ pub struct Connector {
     /// Riding directive for vertical-connector labels colliding with
     /// same-source corridor siblings (see [`RidingLabel`]).
     pub riding: Option<RidingLabel>,
+    /// Layout-mandated V-H-V corridor row (see flowchart's same-gap
+    /// fork dispersion): replaces the natural `sy + 1` row so that
+    /// same-layer sources forking across one gap do not superpose
+    /// their corridors and blur label attribution.
+    pub corridor_row: Option<usize>,
 }
 
 /// Nearest block row free of other label content: `block` holds each
@@ -172,6 +177,7 @@ impl Connector {
             label: None,
             user_width: None,
             riding: None,
+            corridor_row: None,
         }
     }
 
@@ -185,6 +191,14 @@ impl Connector {
     /// [`RidingLabel`]).
     pub fn with_riding_label(mut self, riding: RidingLabel) -> Self {
         self.riding = Some(riding);
+        self
+    }
+
+    /// Override the V-H-V corridor row with a layout-mandated one (see
+    /// flowchart's same-gap fork dispersion). The layout validated the
+    /// row fits the gap, so the natural-row obstacle search is skipped.
+    pub fn with_corridor_row(mut self, row: usize) -> Self {
+        self.corridor_row = Some(row);
         self
     }
 
@@ -220,16 +234,42 @@ impl Connector {
     /// The path geometry comes from `side_route_segments` — the same
     /// source the obstacle check reads — so the two can never drift.
     pub fn render_side_route(&self, canvas: &mut Canvas, all_rects: &[Rect], canvas_w: usize) {
-        let route_x = side_route_column(all_rects, canvas_w);
-        let src_cy = self.source_rect.cy();
-        let tgt_right = self.target_rect.right();
-        let tgt_cy = self.target_rect.cy();
+        self.render_side_route_at(
+            canvas,
+            all_rects,
+            canvas_w,
+            self.source_rect.cy(),
+            self.target_rect.cy(),
+        );
+    }
 
-        let path = side_route_segments(&self.source_rect, &self.target_rect, route_x);
+    /// Render a side route with explicit leg rows (see
+    /// `side_route_leg_rows`): the obstacle-aware variant whose exit or
+    /// entry leg shifts to a clear row when the natural row would cross
+    /// a same-layer sibling. The arrowhead and label follow their leg's
+    /// row.
+    pub fn render_side_route_at(
+        &self,
+        canvas: &mut Canvas,
+        all_rects: &[Rect],
+        canvas_w: usize,
+        exit_row: usize,
+        entry_row: usize,
+    ) {
+        let route_x = side_route_column(all_rects, canvas_w);
+        let tgt_right = self.target_rect.right();
+
+        let path = side_route_segments_at(
+            &self.source_rect,
+            &self.target_rect,
+            route_x,
+            exit_row,
+            entry_row,
+        );
         self.render_segments(canvas, &path);
         // Arrowhead pointing LEFT into the target's right edge.
         let head = arrow_from_path(-1, 0, self.style, self.charset);
-        canvas.put_layered(tgt_right, tgt_cy, head, Layer::ConnectorEnd, None);
+        canvas.put_layered(tgt_right, entry_row, head, Layer::ConnectorEnd, None);
         if let Some(label) = &self.label {
             // Place the label in the side corridor, to the right of the
             // vertical line. Wrap to the remaining canvas width (not
@@ -241,7 +281,7 @@ impl Connector {
             for (i, line) in lines.iter().enumerate() {
                 let line_w = UnicodeWidthStr::width(line.as_str());
                 let clamped_lx = lx.min(canvas_w.saturating_sub(line_w));
-                canvas.put_str_layered(clamped_lx, src_cy + i, line, Layer::Label, None);
+                canvas.put_str_layered(clamped_lx, exit_row + i, line, Layer::Label, None);
             }
         }
     }
@@ -276,8 +316,15 @@ impl Connector {
         // Vertical-axis flow (south → north, or north → south). The
         // shared `vertical_flow_path` is also what
         // `forward_edge_side_routed` inspects, so flowchart's decision
-        // to side-route around obstacles matches this path exactly.
+        // to side-route around obstacles matches this path exactly. A
+        // layout-mandated corridor row (same-gap fork dispersion)
+        // replaces the natural row outright.
         if (from_south && to_north) || (from_north && to_south) {
+            if let Some(row) = self.corridor_row {
+                if !same_x {
+                    return build_three_segment(sx, sy, tx, ty, row);
+                }
+            }
             return vertical_flow_path(
                 (sx, sy),
                 (tx, ty),

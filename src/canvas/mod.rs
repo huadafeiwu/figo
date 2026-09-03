@@ -412,12 +412,83 @@ impl Canvas {
         cell.layer == Layer::Connector && cell.ch != ' '
     }
 
+    /// A connector glyph with a vertical arm: a line or junction that
+    /// can connect north/south. Horizontal-only dashes must NOT count —
+    /// otherwise two parallel corridors on adjacent rows register each
+    /// other's `-` cells as vertical neighbours, the junction repair
+    /// turns every shared column into `+`, and the run cleanup shatters
+    /// both rows into `+-+-+` noise.
+    fn connects_vertically(ch: char) -> bool {
+        matches!(
+            ch,
+            '|' | '+'
+                | '│'
+                | '┃'
+                | '┌'
+                | '┐'
+                | '└'
+                | '┘'
+                | '├'
+                | '┤'
+                | '┬'
+                | '┴'
+                | '┼'
+                | '┏'
+                | '┓'
+                | '┗'
+                | '┛'
+                | '┣'
+                | '┫'
+                | '┳'
+                | '┻'
+                | '╋'
+        )
+    }
+
+    /// A connector glyph with a horizontal arm — the east/west mirror
+    /// of [`Self::connects_vertically`], so parallel vertical lines one
+    /// column apart do not masquerade as horizontal neighbours either.
+    fn connects_horizontally(ch: char) -> bool {
+        matches!(
+            ch,
+            '-' | '+'
+                | '─'
+                | '━'
+                | '┌'
+                | '┐'
+                | '└'
+                | '┘'
+                | '├'
+                | '┤'
+                | '┬'
+                | '┴'
+                | '┼'
+                | '┏'
+                | '┓'
+                | '┗'
+                | '┛'
+                | '┣'
+                | '┫'
+                | '┳'
+                | '┻'
+                | '╋'
+        )
+    }
+
     fn connector_directions(&self, x: usize, y: usize) -> Directions {
+        let vertical_at = |x: usize, y: usize| {
+            self.cell(x, y)
+                .is_some_and(|c| c.layer == Layer::Connector && Self::connects_vertically(c.ch))
+        };
+        let horizontal_at = |x: usize, y: usize| {
+            self.cell(x, y)
+                .is_some_and(|c| c.layer == Layer::Connector && Self::connects_horizontally(c.ch))
+        };
         Directions {
-            n: y > 0 && self.is_connector_line(x, y - 1),
-            s: y + 1 < self.height && self.is_connector_line(x, y + 1),
-            e: x + 1 < self.width && self.is_connector_line(x + 1, y),
-            w: x > 0 && self.is_connector_line(x - 1, y),
+            n: y > 0 && vertical_at(x, y - 1),
+            s: y + 1 < self.height && vertical_at(x, y + 1),
+            e: x + 1 < self.width && horizontal_at(x + 1, y),
+            w: x > 0 && horizontal_at(x - 1, y),
         }
     }
 

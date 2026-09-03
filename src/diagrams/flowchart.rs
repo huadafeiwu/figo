@@ -17,7 +17,7 @@ use crate::layout::geom::{Anchor, Rect};
 use crate::layout::{
     RAIL_OFFSET, RidingCandidate, RidingLabel, allocate_riding_rows, beside_line_label_avail,
     corridor_label_avail, corridor_label_block_top, forward_edge_side_routed, h_corridor_len,
-    riding_placement_cols, side_route_column,
+    riding_placement_cols, side_route_column, side_route_leg_rows,
 };
 use crate::style::{BorderStyle, Charset, LineStyle};
 use crate::text::{NODE_WRAP_WIDTH_PCT, wrap_label};
@@ -77,6 +77,16 @@ pub struct Flowchart {
 struct PositionedNode {
     node: FlowNode,
     rect: Rect,
+}
+
+/// One source's fork footprint in a layer gap: the source's node index,
+/// the union span (lo..=hi of its corridors' columns), and its corridor
+/// connection indices — the unit of same-gap corridor-row dispersion.
+struct GapForkSource {
+    src_idx: usize,
+    lo: usize,
+    hi: usize,
+    conns: Vec<usize>,
 }
 
 /// Vertical stride (rows) between successive nodes in auto-layout.
@@ -162,11 +172,11 @@ impl Flowchart {
         if self.nodes.is_empty() {
             return Err(FigoError::MissingFields("flowchart must have nodes".into()));
         }
-        let positions = match self.layout {
-            Layout::Manual => self.layout_manual()?,
+        let (positions, corridor_rows) = match self.layout {
+            Layout::Manual => (self.layout_manual()?, HashMap::new()),
             Layout::Auto => self.layout_auto()?,
         };
-        self.render_positions(&positions)
+        self.render_positions(&positions, &corridor_rows)
     }
 
     /// Node box-width budget: the aesthetic `NODE_WRAP_WIDTH_PCT`% of
@@ -190,7 +200,7 @@ impl Flowchart {
         Ok(out)
     }
 
-    fn layout_auto(&self) -> Result<Vec<PositionedNode>> {
+    fn layout_auto(&self) -> Result<(Vec<PositionedNode>, HashMap<usize, usize>)> {
         let dims: Vec<(usize, usize)> =
             self.nodes.iter().map(|n| node_dims(&n.label, n.shape, self.node_wrap_cap())).collect();
         let adj = self.build_adjacency();
@@ -281,11 +291,14 @@ impl Flowchart {
     /// Group nodes by layer and compute their (x, y) coordinates.
     /// `dims` is taken by value: same-layer siblings that overflow the
     /// canvas width have their boxes re-wrapped in place (see Pass 1).
+    /// Returns the positions plus each connection's layout-mandated
+    /// corridor row (same-gap fork dispersion; empty when no source
+    /// needed a deeper row).
     fn assign_positions(
         &self,
         mut dims: Vec<(usize, usize)>,
         layers: &[usize],
-    ) -> Result<Vec<PositionedNode>> {
+    ) -> Result<(Vec<PositionedNode>, HashMap<usize, usize>)> {
         let max_layer = *layers.iter().max().unwrap_or(&0);
         let mut layers_map: HashMap<usize, Vec<usize>> = HashMap::new();
         for (idx, &layer) in layers.iter().enumerate() {
@@ -374,6 +387,75 @@ impl Flowchart {
             for &idx in layer_indices {
                 xs[idx] = x;
                 x += dims[idx].0 + gap_x;
+            }
+        }
+
+        // Same-gap fork corridor rows: same-layer sources of equal
+        // height share one natural corridor row (bottom + 1). When
+        // their corridor spans overlap, every source after the first
+        // gets its fork one row deeper so labels never sit on a
+        // superposed segment of another source's corridor — v2's two
+        // sibling diamonds used to stack three edges on one row, each
+        // "no" ambiguous about which fork it belongs to. Same-source
+        // edges share the source's row (a true fork stays unified, as
+        // in v3); sources whose spans are disjoint keep the natural
+        // row. Offsets are relative to the source's bottom and are
+        // resolved to absolute rows once Pass 3 fixes the y positions.
+        let mut corridor_offsets: HashMap<usize, usize> = HashMap::new();
+        let mut gap_corridor_depth: HashMap<usize, usize> = HashMap::new();
+        {
+            // (layer, source height) -> per-source fork footprint
+            let mut groups: HashMap<(usize, usize), Vec<GapForkSource>> = HashMap::new();
+            for (ci, conn) in self.connections.iter().enumerate() {
+                let (Some(&from_idx), Some(&to_idx)) =
+                    (id_to_idx.get(conn.from.as_str()), id_to_idx.get(conn.to.as_str()))
+                else {
+                    continue;
+                };
+                let from_layer = id_to_layer.get(&from_idx).copied().unwrap_or(0);
+                let to_layer = id_to_layer.get(&to_idx).copied().unwrap_or(0);
+                if from_layer >= to_layer {
+                    continue; // back-edge / same-layer: side route
+                }
+                let from_cx = xs[from_idx] + dims[from_idx].0 / 2;
+                let to_cx = xs[to_idx] + dims[to_idx].0 / 2;
+                if from_cx == to_cx {
+                    continue; // straight vertical, no corridor
+                }
+                let (lo, hi) = (from_cx.min(to_cx), from_cx.max(to_cx));
+                let group = groups.entry((from_layer, dims[from_idx].1)).or_default();
+                if let Some(entry) = group.iter_mut().find(|e| e.src_idx == from_idx) {
+                    entry.lo = entry.lo.min(lo);
+                    entry.hi = entry.hi.max(hi);
+                    entry.conns.push(ci);
+                } else {
+                    group.push(GapForkSource { src_idx: from_idx, lo, hi, conns: vec![ci] });
+                }
+            }
+            for ((layer, _), sources) in &groups {
+                // Spans already placed per offset row: (offset, lo, hi).
+                // Spans that merely touch at the shared target leg column
+                // are not a conflict — converging corridors are supposed
+                // to meet there, and each label sits on its own
+                // exclusive approach segment.
+                let mut placed: Vec<(usize, usize, usize)> = Vec::new();
+                for source in sources {
+                    let mut off = 0usize;
+                    while placed.iter().any(|&(o, l, h)| o == off && source.lo < h && source.hi > l)
+                    {
+                        off += 1;
+                    }
+                    if off > 0 {
+                        for &ci in &source.conns {
+                            corridor_offsets.insert(ci, off);
+                        }
+                        gap_corridor_depth
+                            .entry(*layer)
+                            .and_modify(|v| *v = (*v).max(off))
+                            .or_insert(off);
+                    }
+                    placed.push((off, source.lo, source.hi));
+                }
             }
         }
 
@@ -497,6 +579,11 @@ impl Flowchart {
             }
             let label_lines = max_label_lines_per_gap.get(&layer_i).copied().unwrap_or(0).max(1);
             let mut stride = AUTO_STRIDE_ROWS.max(label_lines + 2);
+            if let Some(&depth) = gap_corridor_depth.get(&layer_i) {
+                // The deepest fork corridor row needs its own label
+                // rows below the first corridor's.
+                stride = stride.max(label_lines + 2 + depth);
+            }
             if let Some(&demand) = riding_stride_demand.get(&layer_i) {
                 // Fork-riding labels live below the sibling corridor
                 // block: fit its spill, one `|` rail on each side of the
@@ -506,10 +593,25 @@ impl Flowchart {
             y += max_h + stride;
         }
 
-        Ok(out.into_iter().map(Option::unwrap).collect())
+        let positions: Vec<PositionedNode> = out.into_iter().map(Option::unwrap).collect();
+        // Resolve the assigned corridor rows against the final y
+        // positions — the offset is relative to the source's bottom.
+        let mut corridor_rows: HashMap<usize, usize> = HashMap::new();
+        for (&ci, &off) in &corridor_offsets {
+            let Some(&from_idx) = id_to_idx.get(self.connections[ci].from.as_str()) else {
+                continue;
+            };
+            let row = positions[from_idx].rect.bottom() + 1 + off;
+            corridor_rows.insert(ci, row);
+        }
+        Ok((positions, corridor_rows))
     }
 
-    fn render_positions(&self, positions: &[PositionedNode]) -> Result<String> {
+    fn render_positions(
+        &self,
+        positions: &[PositionedNode],
+        corridor_rows: &HashMap<usize, usize>,
+    ) -> Result<String> {
         let pos_map: HashMap<&str, &PositionedNode> =
             positions.iter().map(|p| (p.node.id.as_str(), p)).collect();
         let all_rects: Vec<Rect> = positions.iter().map(|p| p.rect).collect();
@@ -575,14 +677,17 @@ impl Flowchart {
             }
             let (sy, ty) = (from.rect.bottom(), to.rect.y);
             // Corridor row and label block bottom, using the same
-            // formulas the sibling's own draw pass uses.
+            // formulas the sibling's own draw pass uses — the
+            // layout-assigned row replaces the natural sy + 1 when the
+            // same gap holds another source's overlapping fork.
+            let base_row = corridor_rows.get(&ci).copied().unwrap_or(sy + 1);
             let block_bottom = match &conn.label {
                 Some(label) => {
                     let avail = corridor_label_avail(h_corridor_len(from_cx, to_cx), self.width);
                     let n = wrap_label(label, avail).line_count;
-                    corridor_label_block_top(sy + 1, n, sy, ty) + n - 1
+                    corridor_label_block_top(base_row, n, sy, ty) + n - 1
                 }
-                None => sy + 1,
+                None => base_row,
             };
             fork_sibs.entry(conn.from.as_str()).or_default().push((to_cx, block_bottom));
         }
@@ -670,12 +775,30 @@ impl Flowchart {
             if let Some(label) = &conn.label {
                 connector.label = Some(label.clone());
             }
+            if !is_back && !side_routed.contains(&ci) {
+                // The layout's same-gap fork dispersion row for this
+                // corridor connector (no-op unless another same-layer
+                // source's overlapping fork forced a deeper row).
+                if let Some(&row) = corridor_rows.get(&ci) {
+                    connector = connector.with_corridor_row(row);
+                }
+            }
             if let Some(rl) = riding.get(&ci) {
                 connector = connector.with_riding_label(*rl);
             }
             if is_back || side_routed.contains(&ci) {
                 let w = canvas.width();
-                connector.render_side_route(&mut canvas, &all_rects, w);
+                // Obstacle-aware leg rows: a side route whose natural
+                // exit or entry row would cross a same-layer sibling
+                // shifts that leg to a clear row just outside the
+                // endpoint (diamond targets can only be entered at
+                // their center row — their east side is one vertex).
+                let rail_x = side_route_column(&all_rects, w);
+                let avoid = avoid_rects(positions, from, to);
+                let tgt_flex = !matches!(to.node.shape, NodeShape::Diamond);
+                let (exit_row, entry_row) =
+                    side_route_leg_rows(&from.rect, &to.rect, &avoid, rail_x, tgt_flex);
+                connector.render_side_route_at(&mut canvas, &all_rects, w, exit_row, entry_row);
             } else {
                 connector.render(&mut canvas);
             }
@@ -1540,5 +1663,98 @@ mod tests {
         // The layer fits the canvas instead of stretching past it.
         let max_w = out.lines().map(UnicodeWidthStr::width).max().unwrap_or(0);
         assert!(max_w <= 110, "layer content is {max_w} cols wide:\n{out}");
+    }
+
+    #[test]
+    fn test_back_edge_side_route_avoids_same_layer_sibling() {
+        // A back edge's side-route exit line used to run straight
+        // through a same-layer sibling standing east of the source —
+        // hidden behind the sibling's fill it read as one connected
+        // line THROUGH the sibling. The exit must detour to a clear
+        // row above the source when the eastward span is blocked.
+        let fc = Flowchart::new(90, Charset::Ascii)
+            .layout(Layout::Manual)
+            .add_node(FlowNode {
+                id: "a".into(),
+                label: "A".into(),
+                shape: NodeShape::Rectangle,
+                position: Some((17, 1)),
+            })
+            .add_node(FlowNode {
+                id: "d1".into(),
+                label: "d1?".into(),
+                shape: NodeShape::Diamond,
+                position: Some((15, 7)),
+            })
+            .add_node(FlowNode {
+                id: "d2".into(),
+                label: "d2?".into(),
+                shape: NodeShape::Diamond,
+                position: Some((33, 7)),
+            })
+            .add_node(FlowNode {
+                id: "b".into(),
+                label: "B".into(),
+                shape: NodeShape::Rectangle,
+                position: Some((15, 20)),
+            })
+            .connect("d1", "a", Some("yes"))
+            .connect("d1", "b", None);
+        let out = fc.build().unwrap();
+        assert!(out.contains("yes"), "back-edge label lost:\n{out}");
+        // The exit row (where the rail label sits) must detour ABOVE the
+        // sibling's span instead of running through it at the source's
+        // center row (previously the yes row was d1's and d2's shared
+        // label row with the line passing behind d2).
+        let yes_row = out.lines().position(|l| l.contains("yes")).expect("yes label");
+        let d2_row = out.lines().position(|l| l.contains("d2?")).expect("d2 shape");
+        assert!(
+            yes_row < d2_row,
+            "back-edge exit must detour above the same-layer sibling:\n{out}"
+        );
+    }
+
+    #[test]
+    fn test_same_gap_forks_get_separate_corridor_rows() {
+        // Two same-layer sources forking across one gap used to land
+        // every corridor on the same shared row (all natural rows are
+        // sy+1): the superposed segments made each "no" label ambiguous
+        // about which fork it belongs to. Sources with overlapping
+        // corridor spans must get separate rows.
+        let mut fc = Flowchart::new(110, Charset::Ascii).add_node(FlowNode {
+            id: "s".into(),
+            label: "s".into(),
+            shape: NodeShape::Rounded,
+            position: None,
+        });
+        for id in ["f1", "f2"] {
+            fc = fc.add_node(FlowNode {
+                id: id.into(),
+                label: format!("{id}?"),
+                shape: NodeShape::Diamond,
+                position: None,
+            });
+        }
+        for id in ["x", "y", "h"] {
+            fc = fc.add_node(FlowNode {
+                id: id.into(),
+                label: id.into(),
+                shape: NodeShape::Rectangle,
+                position: None,
+            });
+        }
+        let fc = fc
+            .connect("s", "f1", None)
+            .connect("s", "f2", None)
+            .connect("f1", "x", None)
+            .connect("f2", "y", None)
+            .connect("f1", "h", Some("no"))
+            .connect("f2", "h", Some("no"));
+        let out = fc.build().unwrap();
+        assert_eq!(out.matches("no").count(), 2, "both labels render:\n{out}");
+        let no_rows: Vec<usize> =
+            out.lines().enumerate().filter_map(|(i, l)| l.contains("no").then_some(i)).collect();
+        assert_eq!(no_rows.len(), 2, "two distinct no rows expected:\n{out}");
+        assert_ne!(no_rows[0], no_rows[1], "same-gap forks share one corridor row:\n{out}");
     }
 }

@@ -6,12 +6,12 @@ expression: out
                  | S  |
                  +----+
                     |
-                    +-
-                    +-
-                    +-
- overlap_test_label +-
-                    +-
-                    +-
+                    -+
+                    ||
+                    ||
+ overlap_test_label ||
+                    ||
+                    ||
                     vv
                  ++----+
                  |  T2 |
