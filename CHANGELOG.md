@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Default canvas = detected terminal width × 80%** — when a diagram's JSON
+  omits `width`, the canvas is now 80% of the resolution-detected terminal
+  width (e.g. 1920px@96dpi → 96 columns), leaving a display margin for
+  prompt, line numbers, and side panels so a resolution-derived diagram
+  never wraps when pasted into a terminal. An explicit `width` always wins
+  and is never discounted, and the label-widening budgets
+  (`max(canvas, terminal_width)`) keep using the raw detection — only the
+  default canvas changes.
 - **Box-width aesthetic budget (flowchart + state)** — node labels wider than
   40% of the canvas width wrap inside a narrower, taller box instead of
   stretching their box to a single mega-wide line (a wide box pushes the
