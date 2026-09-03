@@ -24,7 +24,7 @@ use super::routing::{
     Segment, build_three_h_segment, build_three_segment, detoured_mid_x, detoured_mid_y,
     path_intersects_any, side_route_column, snap_outside, straight_vertical, vertical_flow_path,
 };
-use super::side_route::side_route_segments_at;
+use super::side_route::{SideRoutePlan, side_route_segments_at};
 
 /// Pick the arrowhead glyph that points inward along the source's
 /// dominant anchor direction.
@@ -195,8 +195,10 @@ impl Connector {
     }
 
     /// Override the V-H-V corridor row with a layout-mandated one (see
-    /// flowchart's same-gap fork dispersion). The layout validated the
-    /// row fits the gap, so the natural-row obstacle search is skipped.
+    /// flowchart's same-gap fork dispersion). The row is validated
+    /// against the connector's own avoidance set in `compute_path`: an
+    /// override whose path would pierce an obstacle is ignored and the
+    /// natural-row obstacle search runs instead.
     pub fn with_corridor_row(mut self, row: usize) -> Self {
         self.corridor_row = Some(row);
         self
@@ -234,43 +236,37 @@ impl Connector {
     /// The path geometry comes from `side_route_segments` — the same
     /// source the obstacle check reads — so the two can never drift.
     pub fn render_side_route(&self, canvas: &mut Canvas, all_rects: &[Rect], canvas_w: usize) {
-        self.render_side_route_at(
-            canvas,
-            all_rects,
-            canvas_w,
-            self.source_rect.cy(),
-            self.target_rect.cy(),
-        );
+        let rail_x = side_route_column(all_rects, canvas_w);
+        let plan = SideRoutePlan::natural(rail_x, &self.source_rect, &self.target_rect);
+        self.render_side_route_at(canvas, canvas_w, &plan);
     }
 
-    /// Render a side route with explicit leg rows (see
-    /// `side_route_leg_rows`): the obstacle-aware variant whose exit or
-    /// entry leg shifts to a clear row when the natural row would cross
-    /// a same-layer sibling. The arrowhead and label follow their leg's
-    /// row.
-    pub fn render_side_route_at(
-        &self,
-        canvas: &mut Canvas,
-        all_rects: &[Rect],
-        canvas_w: usize,
-        exit_row: usize,
-        entry_row: usize,
-    ) {
-        let route_x = side_route_column(all_rects, canvas_w);
+    /// Render a side route following `plan` (see [`SideRoutePlan`]):
+    /// the obstacle-aware leg rows, the reserved rail column, and the
+    /// back-edge readability directives (near-source label, sibling
+    /// arrow dodge). The arrowhead and label follow their leg's row.
+    pub fn render_side_route_at(&self, canvas: &mut Canvas, canvas_w: usize, plan: &SideRoutePlan) {
+        let route_x = plan.rail_x;
         let tgt_right = self.target_rect.right();
 
         let path = side_route_segments_at(
             &self.source_rect,
             &self.target_rect,
             route_x,
-            exit_row,
-            entry_row,
+            plan.exit_row,
+            plan.entry_row,
+            plan.jog_col,
         );
         self.render_segments(canvas, &path);
         // Arrowhead pointing LEFT into the target's right edge.
         let head = arrow_from_path(-1, 0, self.style, self.charset);
-        canvas.put_layered(tgt_right, entry_row, head, Layer::ConnectorEnd, None);
+        canvas.put_layered(tgt_right, plan.entry_row, head, Layer::ConnectorEnd, None);
         if let Some(label) = &self.label {
+            if plan.label_near_source
+                && self.draw_exit_leg_label(canvas, label, &path, &plan.sibling_arrows)
+            {
+                return;
+            }
             // Place the label in the side corridor, to the right of the
             // vertical line. Wrap to the remaining canvas width (not
             // user_width, because route_x may be past user_width when
@@ -281,9 +277,58 @@ impl Connector {
             for (i, line) in lines.iter().enumerate() {
                 let line_w = UnicodeWidthStr::width(line.as_str());
                 let clamped_lx = lx.min(canvas_w.saturating_sub(line_w));
-                canvas.put_str_layered(clamped_lx, exit_row + i, line, Layer::Label, None);
+                canvas.put_str_layered(clamped_lx, plan.exit_row + i, line, Layer::Label, None);
             }
         }
+    }
+
+    /// Embed the label in the exit horizontal leg, two cells east of its
+    /// west end, clamped west of the first sibling incoming-arrow column
+    /// (whose vertical leg occupies that column on every gap row) or the
+    /// rail. With a jogged exit there are two stretches — the label tries
+    /// each in order. Returns false when no exit stretch exists or the
+    /// first wrapped line fits nowhere — the caller then falls back to
+    /// the rail-end placement.
+    fn draw_exit_leg_label(
+        &self,
+        canvas: &mut Canvas,
+        label: &str,
+        path: &[Segment],
+        sibling_arrows: &[usize],
+    ) -> bool {
+        let hs: Vec<(usize, usize, usize)> = path
+            .iter()
+            .filter_map(|s| match s {
+                Segment::H { x, y, len } => Some((*x, *y, *len)),
+                Segment::V { .. } => None,
+            })
+            .collect();
+        // The last H is the entry leg at the target; every earlier H is
+        // an exit-leg stretch the label may ride.
+        for (x, y, len) in hs.iter().copied().take(hs.len().saturating_sub(1)) {
+            let east = x + len;
+            let hard_east =
+                sibling_arrows.iter().copied().filter(|&a| a > x).min().unwrap_or(east).min(east);
+            let avail = hard_east.saturating_sub(x + 2);
+            if avail < 8 {
+                // Stretch too short for a sane wrap (natural-row exits
+                // start at the source's right edge, right next to the
+                // rail) — the rail-end placement wraps to the wide
+                // right margin instead.
+                continue;
+            }
+            let wrapped = wrap_label(label, avail);
+            let Some(first) = wrapped.lines.first() else { return false };
+            let first_w = UnicodeWidthStr::width(first.as_str());
+            if x + 2 + first_w > hard_east {
+                continue; // try the next exit stretch
+            }
+            for (i, line) in wrapped.lines.iter().enumerate() {
+                canvas.put_str_layered(x + 2, y + i, line, Layer::Label, None);
+            }
+            return true;
+        }
+        false
     }
 
     /// Draw the segments onto the canvas.
@@ -318,11 +363,16 @@ impl Connector {
         // `forward_edge_side_routed` inspects, so flowchart's decision
         // to side-route around obstacles matches this path exactly. A
         // layout-mandated corridor row (same-gap fork dispersion)
-        // replaces the natural row outright.
+        // replaces the natural row — but only after the same obstacle
+        // check the natural search would run: a dispersion row pushed
+        // into a tall same-layer node's band must not pierce it.
         if (from_south && to_north) || (from_north && to_south) {
             if let Some(row) = self.corridor_row {
                 if !same_x {
-                    return build_three_segment(sx, sy, tx, ty, row);
+                    let path = build_three_segment(sx, sy, tx, ty, row);
+                    if !path_intersects_any(&path, &self.avoid) {
+                        return path;
+                    }
                 }
             }
             return vertical_flow_path(
@@ -642,5 +692,32 @@ mod tests {
         // The label should not appear below the source row (y >= 9).
         let below: String = out.lines().skip(9).collect::<Vec<_>>().join("\n");
         assert!(!below.contains("test"), "label should not appear below source:\n{out}");
+    }
+
+    #[test]
+    fn corridor_row_override_falls_back_when_row_pierces() {
+        // The layout-mandated corridor row used to bypass the obstacle
+        // search entirely: a dispersion row pushed into a tall
+        // same-layer node's band drew the corridor straight through it.
+        // The override must be validated against the same avoidance set
+        // and ignored when it pierces.
+        let src = Rect::new(0, 0, 6, 3);
+        let tgt = Rect::new(30, 10, 6, 3);
+        let blocker = Rect::new(14, 1, 6, 8);
+        let c = Connector::new(
+            src,
+            tgt,
+            Anchor::South,
+            Anchor::North,
+            LineStyle::Simple,
+            Charset::Ascii,
+        )
+        .with_avoid(blocker)
+        .with_corridor_row(4);
+        let path = c.compute_path();
+        assert!(
+            !path_intersects_any(&path, &[blocker]),
+            "override row piercing an obstacle must fall back:\n{path:?}"
+        );
     }
 }

@@ -15,9 +15,10 @@ use crate::error::{FigoError, Result};
 use crate::layout::connector::Connector;
 use crate::layout::geom::{Anchor, Rect};
 use crate::layout::{
-    RAIL_OFFSET, RidingCandidate, RidingLabel, allocate_riding_rows, beside_line_label_avail,
-    corridor_label_avail, corridor_label_block_top, forward_edge_side_routed, h_corridor_len,
-    riding_placement_cols, side_route_column, side_route_leg_rows,
+    RAIL_OFFSET, RidingCandidate, RidingLabel, SideRoutePlan, allocate_riding_rows,
+    beside_line_label_avail, corridor_label_avail, corridor_label_block_top,
+    forward_edge_side_routed, h_corridor_len, riding_placement_cols, side_route_column,
+    side_route_exit_jog_col, side_route_leg_rows,
 };
 use crate::style::{BorderStyle, Charset, LineStyle};
 use crate::text::{NODE_WRAP_WIDTH_PCT, wrap_label};
@@ -582,7 +583,7 @@ impl Flowchart {
             if let Some(&depth) = gap_corridor_depth.get(&layer_i) {
                 // The deepest fork corridor row needs its own label
                 // rows below the first corridor's.
-                stride = stride.max(label_lines + 2 + depth);
+                stride = stride.max(label_lines + 2 + 2 * depth);
             }
             if let Some(&demand) = riding_stride_demand.get(&layer_i) {
                 // Fork-riding labels live below the sibling corridor
@@ -601,7 +602,7 @@ impl Flowchart {
             let Some(&from_idx) = id_to_idx.get(self.connections[ci].from.as_str()) else {
                 continue;
             };
-            let row = positions[from_idx].rect.bottom() + 1 + off;
+            let row = positions[from_idx].rect.bottom() + 1 + 2 * off;
             corridor_rows.insert(ci, row);
         }
         Ok((positions, corridor_rows))
@@ -646,6 +647,21 @@ impl Flowchart {
                 }
             }
         }
+        // Columns where forward-edge arrowheads land per layer (the row
+        // above a node's top). Back-edge exit legs share that row with
+        // same-layer siblings' incoming arrows — their labels and jog
+        // routing must dodge these columns.
+        let mut layer_arrow_cols: HashMap<usize, Vec<usize>> = HashMap::new();
+        for (ci, conn) in self.connections.iter().enumerate() {
+            let Some((from, to)) = conn_endpoints(&pos_map, conn) else { continue };
+            if from.rect.y >= to.rect.y {
+                continue;
+            }
+            if side_routed.contains(&ci) {
+                continue;
+            }
+            layer_arrow_cols.entry(to.rect.y).or_default().push(to.rect.x + to.rect.w / 2);
+        }
         // Reserve room on the right for side corridors and their labels.
         let side_room = self.side_room_for_side_routes(positions, side_label_w);
         let total_w = max_w + side_room;
@@ -680,6 +696,11 @@ impl Flowchart {
             // formulas the sibling's own draw pass uses — the
             // layout-assigned row replaces the natural sy + 1 when the
             // same gap holds another source's overlapping fork.
+            // Known drift (P3): an edge that got no assigned row may
+            // still detour deeper than sy + 1 at draw time
+            // (`detoured_mid_y`); this prediction can then sit a rider
+            // one row too high. No corpus instance; revisit with a
+            // shared row-derivation source.
             let base_row = corridor_rows.get(&ci).copied().unwrap_or(sy + 1);
             let block_bottom = match &conn.label {
                 Some(label) => {
@@ -794,11 +815,27 @@ impl Flowchart {
                 // endpoint (diamond targets can only be entered at
                 // their center row — their east side is one vertex).
                 let rail_x = side_route_column(&all_rects, w);
+                // Back-edges ride a dedicated rail two columns further
+                // right: their rail segment is then never shared with a
+                // forward side-routed edge running the opposite
+                // direction (a shared segment renders as one line whose
+                // mid-rail junction direction cannot be read).
+                let rail_x = if is_back { rail_x + RAIL_OFFSET } else { rail_x };
                 let avoid = avoid_rects(positions, from, to);
                 let tgt_flex = !matches!(to.node.shape, NodeShape::Diamond);
                 let (exit_row, entry_row) =
                     side_route_leg_rows(&from.rect, &to.rect, &avoid, rail_x, tgt_flex);
-                connector.render_side_route_at(&mut canvas, &all_rects, w, exit_row, entry_row);
+                let sibling_arrows =
+                    layer_arrow_cols.get(&from.rect.y).cloned().unwrap_or_default();
+                let plan = SideRoutePlan {
+                    rail_x,
+                    exit_row,
+                    entry_row,
+                    label_near_source: is_back,
+                    jog_col: side_route_exit_jog_col(&from.rect, rail_x, exit_row, &sibling_arrows),
+                    sibling_arrows,
+                };
+                connector.render_side_route_at(&mut canvas, w, &plan);
             } else {
                 connector.render(&mut canvas);
             }
@@ -898,7 +935,9 @@ impl Flowchart {
             })
             .max()
             .unwrap_or(0);
-        (RAIL_OFFSET + 1 + back_edge_label_w.max(extra_label_w)).max(MIN_SIDE_ROOM)
+        // The dedicated back-edge rail sits RAIL_OFFSET columns right of
+        // the forward rail, so reserve room for both rails plus labels.
+        (RAIL_OFFSET * 2 + 1 + back_edge_label_w.max(extra_label_w)).max(MIN_SIDE_ROOM)
     }
 
     pub fn render(&self) -> Result<String> {
@@ -1756,5 +1795,174 @@ mod tests {
             out.lines().enumerate().filter_map(|(i, l)| l.contains("no").then_some(i)).collect();
         assert_eq!(no_rows.len(), 2, "two distinct no rows expected:\n{out}");
         assert_ne!(no_rows[0], no_rows[1], "same-gap forks share one corridor row:\n{out}");
+    }
+
+    #[test]
+    fn test_back_edge_exit_jogs_around_sibling_arrow() {
+        // The north-detour exit row (src.y - 1) is exactly the row where
+        // every same-layer sibling's incoming arrowhead sits. Without the
+        // jog the exit horizontal runs straight through the sibling's
+        // `v`, chaining both incoming legs into one phantom line (the
+        // TLS v2 row-69 defect). The exit must hop up one row before the
+        // arrow column, leaving the arrowhead isolated.
+        let fc = Flowchart::new(90, Charset::Ascii)
+            .layout(Layout::Manual)
+            .add_node(FlowNode {
+                id: "a".into(),
+                label: "A".into(),
+                shape: NodeShape::Rectangle,
+                position: Some((17, 1)),
+            })
+            .add_node(FlowNode {
+                id: "d1".into(),
+                label: "d1?".into(),
+                shape: NodeShape::Diamond,
+                position: Some((15, 7)),
+            })
+            .add_node(FlowNode {
+                id: "d2".into(),
+                label: "d2?".into(),
+                shape: NodeShape::Diamond,
+                position: Some((33, 7)),
+            })
+            .add_node(FlowNode {
+                id: "b".into(),
+                label: "B".into(),
+                shape: NodeShape::Rectangle,
+                position: Some((15, 20)),
+            })
+            .connect("a", "d2", None)
+            .connect("d1", "a", Some("yes"))
+            .connect("d1", "b", None);
+        let out = fc.build().unwrap();
+        let yes_row = out.lines().position(|l| l.contains("yes")).expect("yes label");
+        let yes_line = out.lines().nth(yes_row).unwrap();
+        // d2's incoming arrowhead shares the exit row; it must survive
+        // isolated — no horizontal run touching it from either side.
+        assert!(yes_line.contains('v'), "d2's incoming arrow rides the exit row:\n{out}");
+        assert!(!yes_line.contains("-v"), "exit line pierces d2's arrow:\n{out}");
+        assert!(!yes_line.contains("v-"), "exit line pierces d2's arrow:\n{out}");
+        // The jog: the row above the exit carries the long eastward run.
+        let above = out.lines().nth(yes_row - 1).expect("row above the exit");
+        assert!(above.contains("---"), "jog upper run missing:\n{out}");
+    }
+
+    #[test]
+    fn test_same_gap_fork_rows_separated_by_blank_row() {
+        // Adjacent corridor rows of conflicting same-gap sources used to
+        // interleave: a stray `+` sat directly above the lower source's
+        // corner forming a false vertical leg, and the labels stacked on
+        // neighbouring rows. Conflicting corridors must be separated by
+        // a leg-only blank row.
+        let mut fc = Flowchart::new(110, Charset::Ascii).add_node(FlowNode {
+            id: "s".into(),
+            label: "s".into(),
+            shape: NodeShape::Rounded,
+            position: None,
+        });
+        for id in ["f1", "f2"] {
+            fc = fc.add_node(FlowNode {
+                id: id.into(),
+                label: format!("{id}?"),
+                shape: NodeShape::Diamond,
+                position: None,
+            });
+        }
+        for id in ["x", "y", "h"] {
+            fc = fc.add_node(FlowNode {
+                id: id.into(),
+                label: id.into(),
+                shape: NodeShape::Rectangle,
+                position: None,
+            });
+        }
+        let fc = fc
+            .connect("s", "f1", None)
+            .connect("s", "f2", None)
+            .connect("f1", "x", None)
+            .connect("f2", "y", None)
+            .connect("f1", "h", Some("no"))
+            .connect("f2", "h", Some("no"));
+        let out = fc.build().unwrap();
+        let no_rows: Vec<usize> =
+            out.lines().enumerate().filter_map(|(i, l)| l.contains("no").then_some(i)).collect();
+        assert_eq!(no_rows.len(), 2, "two distinct no rows expected:\n{out}");
+        assert!(
+            no_rows[1] - no_rows[0] >= 2,
+            "conflicting corridors must sit a blank row apart:\n{out}"
+        );
+        let mid = out.lines().nth(no_rows[0] + 1).expect("row between the corridors");
+        assert!(
+            !mid.contains('-') && !mid.contains('+'),
+            "the row between conflicting corridors may only carry legs:\n{out}"
+        );
+    }
+
+    #[test]
+    fn test_back_edge_rides_dedicated_rail() {
+        // A back edge's rail used to share its column with forward
+        // side-routed edges: two edges running opposite directions
+        // overlapped on one segment and the mid-rail junction could not
+        // be read. The back edge's rail must sit RAIL_OFFSET columns
+        // right of the forward rail.
+        let fc = Flowchart::new(90, Charset::Ascii)
+            .layout(Layout::Manual)
+            .add_node(FlowNode {
+                id: "a".into(),
+                label: "A".into(),
+                shape: NodeShape::Rectangle,
+                position: Some((17, 1)),
+            })
+            .add_node(FlowNode {
+                id: "d1".into(),
+                label: "d1?".into(),
+                shape: NodeShape::Diamond,
+                position: Some((15, 7)),
+            })
+            .add_node(FlowNode {
+                id: "d2".into(),
+                label: "d2?".into(),
+                shape: NodeShape::Diamond,
+                position: Some((33, 7)),
+            })
+            .add_node(FlowNode {
+                id: "b".into(),
+                label: "B".into(),
+                shape: NodeShape::Rectangle,
+                position: Some((15, 20)),
+            })
+            .connect("d1", "a", Some("yes"))
+            .connect("d1", "b", None);
+        let out = fc.build().unwrap();
+        let entry = out.lines().find(|l| l.contains("<--")).expect("back-edge entry");
+        // d2.right() = 40; the forward rail is 42; the dedicated
+        // back-edge rail is 44 (RAIL_OFFSET further right).
+        assert_eq!(entry.rfind('+'), Some(44), "back edge must ride the dedicated rail:\n{out}");
+    }
+
+    #[test]
+    fn test_back_edge_short_exit_keeps_rail_end_label() {
+        // A near-source label needs room: when the exit stretch is too
+        // short for a sane wrap (natural-row exits start at the source's
+        // right edge, right next to the rail), the label must fall back
+        // to the rail end instead of being shattered into two-column
+        // fragments (the "wakeup" -> wa/ke/up regression).
+        let fc = Flowchart::new(60, Charset::Ascii)
+            .layout(Layout::Manual)
+            .add_node(FlowNode {
+                id: "t".into(),
+                label: "T".into(),
+                shape: NodeShape::Rectangle,
+                position: Some((2, 1)),
+            })
+            .add_node(FlowNode {
+                id: "s".into(),
+                label: "S".into(),
+                shape: NodeShape::Rectangle,
+                position: Some((30, 8)),
+            })
+            .connect("s", "t", Some("wakeup"));
+        let out = fc.build().unwrap();
+        assert_eq!(out.matches("wakeup").count(), 1, "label must render whole:\n{out}");
     }
 }

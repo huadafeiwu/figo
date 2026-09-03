@@ -688,4 +688,37 @@ mod tests {
         let row = rendered.lines().nth(2).unwrap();
         assert!(!row.contains("++"), "narrow corridor should not produce ++, got: {row:?}");
     }
+
+    #[test]
+    fn connector_glyphs_are_direction_classified() {
+        // Junction repair depends on every line glyph written to
+        // Layer::Connector being classified by the arm-direction
+        // predicates. When a new charset/style adds a connector glyph,
+        // extend both the inventory here and the matches! lists in
+        // connects_vertically/connects_horizontally — an unclassified
+        // glyph silently degrades repair into unconnected lines.
+        let pure_lines =
+            [('-', false), ('─', false), ('━', false), ('|', true), ('│', true), ('┃', true)];
+        for (ch, vertical) in pure_lines {
+            assert_eq!(Canvas::connects_vertically(ch), vertical, "{ch:?} arm mismatch");
+            assert_eq!(Canvas::connects_horizontally(ch), !vertical, "{ch:?} arm mismatch");
+        }
+        // Corners, tees and crosses carry BOTH arms.
+        let both_arms = [
+            '+', '┌', '┐', '└', '┘', '├', '┤', '┬', '┴', '┼', '┏', '┓', '┗', '┛', '┣', '┫', '┳',
+            '┻', '╋',
+        ];
+        for ch in both_arms {
+            assert!(Canvas::connects_vertically(ch), "{ch:?} must carry a vertical arm");
+            assert!(Canvas::connects_horizontally(ch), "{ch:?} must carry a horizontal arm");
+        }
+        // Arrowheads are endpoints, never line arms.
+        for ch in ['v', '^', '<', '>', '↓', '↑', '←', '→', '▼', '▲', '▶', '◀'] {
+            assert!(!Canvas::connects_vertically(ch), "{ch:?} must not count as a vertical arm");
+            assert!(
+                !Canvas::connects_horizontally(ch),
+                "{ch:?} must not count as a horizontal arm"
+            );
+        }
+    }
 }
