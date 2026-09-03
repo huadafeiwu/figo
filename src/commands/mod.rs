@@ -97,12 +97,13 @@ pub(crate) fn parse_valign(s: &str) -> figo::style::VAlign {
     }
 }
 
-/// Detect the default canvas width from the primary monitor's resolution
-/// and DPI scaling. Falls back to 120 on non-Windows platforms or failure.
-///
-/// Formula: columns = (screen_width_px / dpi_scale) / 16, capped to [80, 200].
-/// Examples: 1920px@96dpi → 120, 2560px@96dpi → 160, 3840px@144dpi → 160.
-pub fn default_width() -> usize {
+/// The raw detected terminal width, without the display margin.
+/// Label-widening budgets use this (`max(canvas, terminal_width())`):
+/// labels may drive geometry up to what the display can actually show,
+/// even when the canvas itself is the margined default — discounting
+/// the budget would re-wrap labels of diagrams that set an explicit
+/// `width`.
+pub fn terminal_width() -> usize {
     #[cfg(windows)]
     {
         detect_width_windows().unwrap_or(120)
@@ -111,6 +112,18 @@ pub fn default_width() -> usize {
     {
         120
     }
+}
+
+/// Detect the default canvas width: `terminal_width()` scaled to
+/// `DEFAULT_WIDTH_PCT` (the display margin). Falls back to 96 columns
+/// (80% of 120) on non-Windows or failure.
+///
+/// Formula: columns = (screen_width_px / dpi_scale) / 16, clamped to
+/// [80, 200], then discounted to 80%.
+/// Examples: 1920px@96dpi → 120 → 96, 2560px@96dpi → 160 → 128,
+/// 3840px@144dpi → 160 → 128.
+pub fn default_width() -> usize {
+    apply_display_margin(terminal_width())
 }
 
 #[cfg(windows)]
@@ -148,4 +161,31 @@ fn detect_width_windows() -> Option<usize> {
 /// detect from the display.
 pub fn resolve_width(user_width: usize) -> usize {
     if user_width > 0 { user_width } else { default_width() }
+}
+
+/// Fraction of the detected terminal width used as the default canvas,
+/// in percent. Leaves a display margin — prompt, line numbers, editor
+/// side panels — so a resolution-derived diagram keeps about a fifth of
+/// the terminal free and never wraps when pasted (user-approved
+/// 2026-09-03). A JSON `width` always wins and is not discounted.
+const DEFAULT_WIDTH_PCT: usize = 80;
+
+/// Apply the display margin to a detected terminal width.
+fn apply_display_margin(cols: usize) -> usize {
+    cols * DEFAULT_WIDTH_PCT / 100
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_width_applies_display_margin() {
+        // The default canvas is 80% of the detected terminal width;
+        // explicit JSON `width` bypasses this entirely.
+        assert_eq!(apply_display_margin(120), 96);
+        assert_eq!(apply_display_margin(160), 128);
+        assert_eq!(apply_display_margin(80), 64);
+        assert_eq!(apply_display_margin(200), 160);
+    }
 }

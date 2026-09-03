@@ -1,6 +1,6 @@
 //! Command handler for FSM state diagrams.
 
-use super::{default_width, resolve_width};
+use super::{resolve_width, terminal_width};
 use figo::diagrams::state::{StateDiagram, StateNode, StateType};
 use figo::error::Result;
 use serde::Deserialize;
@@ -55,7 +55,7 @@ pub fn run_state(input: &str) -> Result<String> {
     // Display budget: labels may grow the canvas beyond the user width
     // (labels prefer one line) but never what the display can show.
     let mut sd = StateDiagram::new(width, charset.into())
-        .label_budget(width.max(default_width()))
+        .label_budget(width.max(terminal_width()))
         .color(inp.color);
     for s in states {
         sd = sd.add_state(s);

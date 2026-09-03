@@ -1,6 +1,6 @@
 //! Command handlers for sequence, banner, and gantt diagrams.
 
-use super::{JsonCharset, default_width, resolve_width};
+use super::{JsonCharset, resolve_width, terminal_width};
 use figo::diagrams::banner;
 use figo::diagrams::gantt::{GanttChart, GanttSection, GanttTask, TimeUnit};
 use figo::diagrams::sequence::SequenceDiagram;
@@ -32,7 +32,7 @@ pub fn run_sequence(input: &str) -> Result<String> {
     // Display budget: label-driven lane growth may exceed the user width
     // (labels prefer one line) but never what the display can show.
     let width = resolve_width(inp.width);
-    let budget = width.max(default_width());
+    let budget = width.max(terminal_width());
     let mut sd =
         SequenceDiagram::new(width, inp.charset.into()).label_budget(budget).color(inp.color);
     for p in &inp.participants {
