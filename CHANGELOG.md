@@ -5,7 +5,7 @@ All notable changes to figo will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.3] — 2026-09-03
+## [0.2.3] — 2026-09-04
 
 ### Fixed
 
@@ -15,13 +15,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   label ambiguous about which fork it belongs to. Same-gap sources whose
   corridor spans strictly overlap now get successive rows (a true fork from
   one source stays unified; converging corridors that merely touch at the
-  shared target leg keep sharing the row).
+  shared target leg keep sharing the row). Conflicting corridor rows sit a
+  blank row apart (`sy + 1`, `sy + 3`, …) — adjacent corridor rows used to
+  interleave into a stray `+` directly above the lower source's corner (a
+  false vertical leg that read as a whole false branch) and stack labels on
+  neighbouring rows.
 - **Flowcharts — back-edge side-route exit ran through same-layer siblings**
   — the side-route's horizontal exit never checked obstacles: the line hid
   behind a sibling's fill and read as one connected line THROUGH it. Exit and
   entry legs now shift to the nearest clear row just outside the endpoint
   (above first, the hand-drawn convention for a back edge dodging a sibling;
   diamond targets still receive the arrowhead at their center row only).
+- **Flowcharts — back-edge exit line pierced siblings' incoming arrowheads**
+  — the north-detour exit row (`src.y - 1`) is exactly the row where every
+  same-layer sibling's incoming arrow lands, and the obstacle model only saw
+  node rects: the exit horizontal ran straight through the arrow, chaining
+  both incoming legs into one phantom line. The exit now jogs up one row
+  before the arrow column (a row that crosses only plain legs, rendered as
+  clean `+` crossings), and back-edge labels embed in the exit leg next to
+  the source instead of riding the rail end 40-59 columns away. Exit
+  stretches too short for a sane wrap (natural-row exits start at the
+  source's right edge, next to the rail) keep the rail-end label.
+- **Flowcharts — back edges shared the side rail with forward edges** — a
+  back edge riding up and a forward side-routed edge riding down the same
+  column overlapped on one segment, and their mid-rail junction direction
+  could not be read. Back edges now ride a dedicated rail `RAIL_OFFSET`
+  columns further right; where the rails meet the opposite edge's horizontal
+  legs the crossing renders as a clean `+`.
+- **Flowcharts — layout-mandated corridor rows skipped the obstacle check**
+  — the same-gap dispersion override replaced the natural corridor row
+  outright, so a dispersion row pushed into a tall same-layer node's band
+  drew the corridor straight through it. The override is now validated
+  against the connector's own avoidance set and ignored when it pierces
+  (the natural-row obstacle search then runs as before).
 - **Junction repair — parallel adjacent lines shattered into `+-+-+`** —
   `connector_directions` counted any connector glyph as a vertical/horizontal
   neighbour, so two parallel corridors on adjacent rows (or two vertical lines
@@ -32,6 +58,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   arm. This also fixed two enshrined artifacts: the jog corner `+` sat one
   cell off (09-dual-path), and adjacent rail+leg verticals rendered as an
   alternating `+-` pattern instead of `||`.
+
+### Added
+
+- **Test coverage** — six regression tests lock the new behaviour: the exit
+  jog around a sibling's incoming arrowhead (the coverage gap of the first
+  back-edge test — its sibling had no edges), the blank-row separation of
+  conflicting fork corridors, the dedicated back-edge rail column, the
+  rail-end fallback for labels on short exit stretches, the override
+  fallback when a mandated corridor row pierces, and a glyph-inventory test
+  guarding `connects_vertically`/`connects_horizontally` against future
+  charset/style additions.
 
 ## [0.2.2] — 2026-09-02
 
