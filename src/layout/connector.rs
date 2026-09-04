@@ -255,7 +255,7 @@ impl Connector {
             route_x,
             plan.exit_row,
             plan.entry_row,
-            plan.jog_col,
+            plan.jog,
         );
         self.render_segments(canvas, &path);
         // Arrowhead pointing LEFT into the target's right edge.

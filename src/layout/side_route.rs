@@ -40,8 +40,8 @@ pub struct SideRoutePlan {
     /// legs) that exit-leg runs and labels must dodge.
     pub sibling_arrows: Vec<usize>,
     /// Reroute the exit leg around a sibling's arrowhead (see
-    /// [`side_route_exit_jog_col`]).
-    pub jog_col: Option<usize>,
+    /// [`side_route_exit_jog`]): `(corner column, upper row)`.
+    pub jog: Option<(usize, usize)>,
 }
 
 impl SideRoutePlan {
@@ -53,23 +53,32 @@ impl SideRoutePlan {
             entry_row: tgt.cy(),
             label_near_source: false,
             sibling_arrows: Vec::new(),
-            jog_col: None,
+            jog: None,
         }
     }
 }
 
-/// The column where the exit horizontal leg jogs up one row to dodge the
-/// arrowhead of a same-layer sibling's incoming edge. Only the
-/// north-detour exit row (`src.y - 1`) needs this: every same-layer
-/// sibling's incoming arrow lands on that same row (same-layer nodes
-/// share `y`), while the row above it (`src.y - 2`) crosses nothing but
-/// plain vertical legs, which render as clean `+` crossings.
-pub fn side_route_exit_jog_col(
+/// The exit leg's jog around a same-layer sibling's incoming arrowhead:
+/// `(corner column, upper row)`. Only the north-detour exit row
+/// (`src.y - 1`) needs this: every same-layer sibling's incoming arrow
+/// lands on that same row (same-layer nodes share `y`).
+///
+/// The upper row is `src.y - 2` — with the usual layer gap (auto
+/// stride >= 4) that row carries nothing but plain vertical legs, which
+/// the run crosses as clean `+` junctions. A tight three-row gap puts
+/// the layer-above's fork corridor exactly on `src.y - 2`; merging into
+/// it would chain the two edges into one line, so `h_spans` (the
+/// horizontal runs to stay clear of, as `(row, lo, hi)`) pushes the jog
+/// one row further up (`src.y - 3`, the row just below the above node —
+/// again legs only). `None` when no arrow needs dodging, the corner
+/// would collide with the source column, or both upper rows are busy.
+pub fn side_route_exit_jog(
     src: &Rect,
     rail_x: usize,
     exit_row: usize,
     sibling_arrow_cols: &[usize],
-) -> Option<usize> {
+    h_spans: &[(usize, usize, usize)],
+) -> Option<(usize, usize)> {
     if src.y < 2 || exit_row + 1 != src.y {
         return None;
     }
@@ -77,7 +86,12 @@ pub fn side_route_exit_jog_col(
     let first =
         sibling_arrow_cols.iter().copied().filter(|&a| a > start + 1 && a < rail_x).min()?;
     let jog = first - 2;
-    (jog > start).then_some(jog)
+    if jog <= start {
+        return None;
+    }
+    let mut ups = [Some(src.y - 2), src.y.checked_sub(3)].into_iter().flatten();
+    ups.find(|&up| !h_spans.iter().any(|&(r, lo, hi)| r == up && hi >= jog && lo <= rail_x))
+        .map(|up| (jog, up))
 }
 
 /// Segments of the right side route with explicit leg rows (see
@@ -86,29 +100,28 @@ pub fn side_route_exit_jog_col(
 /// source's span, so its horizontal leg starts at the anchor column —
 /// directly above the top vertex — and reads as leaving the endpoint's
 /// top, the hand-drawn convention for a back edge dodging a sibling.
-/// `jog_col` reroutes the exit leg around a sibling's incoming arrow
-/// (see [`side_route_exit_jog_col`]): east on the detour row to `jog`,
-/// up one row, then east to the rail.
+/// `jog` reroutes the exit leg around a sibling's arrowhead (see
+/// [`side_route_exit_jog`]): east on the detour row to the corner
+/// column, up to the chosen upper row, then east to the rail.
 pub fn side_route_segments_at(
     src: &Rect,
     tgt: &Rect,
     rail_x: usize,
     exit_row: usize,
     entry_row: usize,
-    jog_col: Option<usize>,
+    jog: Option<(usize, usize)>,
 ) -> Vec<Segment> {
     let src_right = src.right();
     let tgt_right = tgt.right();
     let mut segs: Vec<Segment> = Vec::new();
-    if let Some(jog) = jog_col {
-        let up_row = src.y - 2;
+    if let Some((jog_col, up_row)) = jog {
         let start = src.cx();
-        if jog > start {
-            segs.push(Segment::H { x: start, y: exit_row, len: jog - start });
+        if jog_col > start {
+            segs.push(Segment::H { x: start, y: exit_row, len: jog_col - start });
         }
-        segs.push(Segment::V { x: jog, y: up_row, len: exit_row - up_row + 1 });
-        if rail_x > jog {
-            segs.push(Segment::H { x: jog, y: up_row, len: rail_x - jog });
+        segs.push(Segment::V { x: jog_col, y: up_row, len: exit_row - up_row + 1 });
+        if rail_x > jog_col {
+            segs.push(Segment::H { x: jog_col, y: up_row, len: rail_x - jog_col });
         }
         let (lo, hi) = if up_row <= entry_row { (up_row, entry_row) } else { (entry_row, up_row) };
         segs.push(Segment::V { x: rail_x, y: lo, len: hi - lo + 1 });

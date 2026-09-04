@@ -18,7 +18,7 @@ use crate::layout::{
     RAIL_OFFSET, RidingCandidate, RidingLabel, SideRoutePlan, allocate_riding_rows,
     beside_line_label_avail, corridor_label_avail, corridor_label_block_top,
     forward_edge_side_routed, h_corridor_len, riding_placement_cols, side_route_column,
-    side_route_exit_jog_col, side_route_leg_rows,
+    side_route_exit_jog, side_route_leg_rows,
 };
 use crate::style::{BorderStyle, Charset, LineStyle};
 use crate::text::{NODE_WRAP_WIDTH_PCT, wrap_label};
@@ -662,6 +662,28 @@ impl Flowchart {
             }
             layer_arrow_cols.entry(to.rect.y).or_default().push(to.rect.x + to.rect.w / 2);
         }
+        // Natural corridor rows of forward edges as (row, lo, hi) spans.
+        // A back-edge jog's upper run must stay clear of these: a tight
+        // three-row layer gap puts the layer-above's fork corridor
+        // exactly on `src.y - 2`, and merging into it would chain the
+        // two edges into one line.
+        let mut corridor_spans: Vec<(usize, usize, usize)> = Vec::new();
+        for (ci, conn) in self.connections.iter().enumerate() {
+            let Some((from, to)) = conn_endpoints(&pos_map, conn) else { continue };
+            if from.rect.y >= to.rect.y {
+                continue;
+            }
+            if side_routed.contains(&ci) {
+                continue;
+            }
+            let from_cx = from.rect.x + from.rect.w / 2;
+            let to_cx = to.rect.x + to.rect.w / 2;
+            if from_cx == to_cx {
+                continue; // straight vertical, no corridor H
+            }
+            let row = (from.rect.bottom() + 1).min(to.rect.y.saturating_sub(1));
+            corridor_spans.push((row, from_cx.min(to_cx), from_cx.max(to_cx)));
+        }
         // Reserve room on the right for side corridors and their labels.
         let side_room = self.side_room_for_side_routes(positions, side_label_w);
         let total_w = max_w + side_room;
@@ -832,7 +854,13 @@ impl Flowchart {
                     exit_row,
                     entry_row,
                     label_near_source: is_back,
-                    jog_col: side_route_exit_jog_col(&from.rect, rail_x, exit_row, &sibling_arrows),
+                    jog: side_route_exit_jog(
+                        &from.rect,
+                        rail_x,
+                        exit_row,
+                        &sibling_arrows,
+                        &corridor_spans,
+                    ),
                     sibling_arrows,
                 };
                 connector.render_side_route_at(&mut canvas, w, &plan);
@@ -1842,9 +1870,19 @@ mod tests {
         assert!(yes_line.contains('v'), "d2's incoming arrow rides the exit row:\n{out}");
         assert!(!yes_line.contains("-v"), "exit line pierces d2's arrow:\n{out}");
         assert!(!yes_line.contains("v-"), "exit line pierces d2's arrow:\n{out}");
-        // The jog: the row above the exit carries the long eastward run.
-        let above = out.lines().nth(yes_row - 1).expect("row above the exit");
-        assert!(above.contains("---"), "jog upper run missing:\n{out}");
+        // The arrow's own turn-down cell sits one row up (A->d2's
+        // corridor ends there). A dash instead means the jog's upper run
+        // merged into the corridor — the two edges read as one line and
+        // A's edge appears to loop back through the rail.
+        let v_col = yes_line.find('v').expect("arrow column");
+        let turn =
+            out.lines().nth(yes_row - 1).expect("corridor row").chars().nth(v_col).unwrap_or(' ');
+        assert_ne!(turn, '-', "jog upper run merged into the corridor above:\n{out}");
+        // The jog's upper run itself: with this graph's three-row layer
+        // gap the corridor occupies y-2, so the run hops one row further
+        // (two rows above the exit).
+        let upper = out.lines().nth(yes_row - 2).expect("jog upper run row");
+        assert!(upper.contains("---"), "jog upper run missing:\n{out}");
     }
 
     #[test]

@@ -35,7 +35,7 @@ pub use routing::{
     snap_outside, straight_vertical, vertical_flow_path,
 };
 pub use side_route::{
-    SideRoutePlan, forward_edge_side_routed, side_route_exit_jog_col, side_route_leg_rows,
+    SideRoutePlan, forward_edge_side_routed, side_route_exit_jog, side_route_leg_rows,
     side_route_segments, side_route_segments_at,
 };
 pub use sizing::{column_starts, distribute, fit_to_width, trim_trailing};
