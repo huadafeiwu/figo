@@ -5,6 +5,45 @@ All notable changes to figo will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] — 2026-09-04
+
+### Fixed
+
+- **Crossings rendered as `+`, indistinguishable from real junctions** —
+  two lines passing through the same cell without connecting (a fork
+  corridor through a sibling's leg, a back-edge rail crossing an entry
+  leg, a sequence message through an intermediate participant's
+  lifeline) rendered as the same `+` a real junction uses, reading as a
+  connection that does not exist. A new segment-aware canvas pass — fed
+  by a connector-line log the canvas records while drawing — rewrites
+  crossings as a gap: the vertical stays continuous and the horizontal
+  yields one blank cell on each side. A crossing is a horizontal span
+  and a vertical span overlapping at a cell interior to BOTH spans; any
+  endpoint on the cell is a real junction (a leg joining a corridor, a
+  merge) and keeps its `+`. Orthogonal paths only ever meet their own
+  segments at endpoints, so the check needs no edge identity. Glyph
+  constraints (user decisions): nothing of East-Asian-ambiguous width
+  and nothing from the box-drawing family — the gap is plain spaces
+  plus the vertical line glyph in both charsets.
+- **Phantom junction arms** — the raster junction repair welded arms
+  onto neighbouring lines with no segment backing them (e.g. a jog's
+  upper run passing one row above a corridor corner read as a branch
+  into the sibling). Repair-made junction glyphs are now arm-validated
+  against the line log: an arm survives only when same-direction
+  coverage spans the glyph cell and the arm's neighbour. Pre-written
+  glyphs (self-loop corners, corridor junction marks) are authoritative
+  and untouched.
+- Side-route and sequence-message horizontal spans now include their
+  corner columns (the inclusive convention of `build_three_segment`),
+  which the arm validation relies on; renders are unchanged.
+
+### Added
+
+- **Test coverage** — canvas-level crossing/endpoint/phantom-arm unit
+  tests, a flowchart corridor-through-leg render test, a sequence
+  message-through-lifeline render test, and a phantom-arm count
+  assertion on the jog test.
+
 ## [0.2.3] — 2026-09-04
 
 ### Fixed
