@@ -662,11 +662,12 @@ impl Flowchart {
             }
             layer_arrow_cols.entry(to.rect.y).or_default().push(to.rect.x + to.rect.w / 2);
         }
-        // Natural corridor rows of forward edges as (row, lo, hi) spans.
-        // A back-edge jog's upper run must stay clear of these: a tight
-        // three-row layer gap puts the layer-above's fork corridor
-        // exactly on `src.y - 2`, and merging into it would chain the
-        // two edges into one line.
+        // Natural corridor rows of forward edges as (row, lo, hi) spans,
+        // with their wrapped label blocks' rows included. A back-edge
+        // jog's upper run must stay clear of these: a tight three-row
+        // layer gap puts the layer-above's fork corridor exactly on
+        // `src.y - 2`, and merging into it would chain the two edges
+        // into one line.
         let mut corridor_spans: Vec<(usize, usize, usize)> = Vec::new();
         for (ci, conn) in self.connections.iter().enumerate() {
             let Some((from, to)) = conn_endpoints(&pos_map, conn) else { continue };
@@ -681,8 +682,20 @@ impl Flowchart {
             if from_cx == to_cx {
                 continue; // straight vertical, no corridor H
             }
+            let (lo, hi) = (from_cx.min(to_cx), from_cx.max(to_cx));
             let row = (from.rect.bottom() + 1).min(to.rect.y.saturating_sub(1));
-            corridor_spans.push((row, from_cx.min(to_cx), from_cx.max(to_cx)));
+            corridor_spans.push((row, lo, hi));
+            if let Some(label) = &conn.label {
+                // The label block spans rows around the corridor row
+                // (same formula the draw side uses); the jog's run must
+                // not pass underneath the text.
+                let avail = corridor_label_avail(h_corridor_len(from_cx, to_cx), self.width);
+                let n = wrap_label(label, avail).line_count;
+                let top = corridor_label_block_top(row, n, from.rect.bottom(), to.rect.y);
+                for r in top..top + n {
+                    corridor_spans.push((r, lo, hi));
+                }
+            }
         }
         // Reserve room on the right for side corridors and their labels.
         let side_room = self.side_room_for_side_routes(positions, side_label_w);
@@ -785,6 +798,13 @@ impl Flowchart {
             });
             riding.insert(ci, placement.riding);
         }
+        // Riding blocks occupy their rows too — a jog's upper run must
+        // not pass underneath their text either.
+        for pr in &placed_riders {
+            for r in pr.rows.0..pr.rows.1 {
+                corridor_spans.push((r, pr.span.0, pr.span.1.saturating_sub(1)));
+            }
+        }
 
         // Canvas height: riding block bottoms are treated exactly like
         // box bottoms — same margin expression.
@@ -860,6 +880,7 @@ impl Flowchart {
                         exit_row,
                         &sibling_arrows,
                         &corridor_spans,
+                        &all_rects,
                     ),
                     sibling_arrows,
                 };

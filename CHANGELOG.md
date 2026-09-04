@@ -34,10 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before the arrow column (a row that crosses only plain legs, rendered as
   clean `+` crossings), and back-edge labels embed in the exit leg next to
   the source instead of riding the rail end 40-59 columns away. The jog's
-  upper row also dodges the layer-above's fork corridor — a tight
-  three-row layer gap puts that corridor exactly on the first candidate
-  row, where the two horizontals would merge into one phantom line (the
-  jog then hops one row further up, crossing only legs). Exit
+  upper row is picked by walking up from the first row above the arrow
+  row — skipping rows occupied by fork corridors, their label blocks or
+  riding blocks (a tight three-row layer gap puts that corridor exactly
+  on the first candidate row, where the two horizontals would merge
+  into one phantom line) — and giving up at a node. Exit
   stretches too short for a sane wrap (natural-row exits start at the
   source's right edge, next to the rail) keep the rail-end label.
 - **Flowcharts — back edges shared the side rail with forward edges** — a

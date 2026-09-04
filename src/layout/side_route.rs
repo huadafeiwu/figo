@@ -58,26 +58,35 @@ impl SideRoutePlan {
     }
 }
 
+/// Columns between the jog corner and the dodged arrowhead: one blank
+/// column (a dash there would read as a T-junction into the arrow) plus
+/// one dash (so the lower run still reads as a line, not a stub).
+const JOG_ARROW_CLEARANCE: usize = 2;
+
 /// The exit leg's jog around a same-layer sibling's incoming arrowhead:
 /// `(corner column, upper row)`. Only the north-detour exit row
 /// (`src.y - 1`) needs this: every same-layer sibling's incoming arrow
 /// lands on that same row (same-layer nodes share `y`).
 ///
-/// The upper row is `src.y - 2` — with the usual layer gap (auto
-/// stride >= 4) that row carries nothing but plain vertical legs, which
-/// the run crosses as clean `+` junctions. A tight three-row gap puts
-/// the layer-above's fork corridor exactly on `src.y - 2`; merging into
-/// it would chain the two edges into one line, so `h_spans` (the
-/// horizontal runs to stay clear of, as `(row, lo, hi)`) pushes the jog
-/// one row further up (`src.y - 3`, the row just below the above node —
-/// again legs only). `None` when no arrow needs dodging, the corner
-/// would collide with the source column, or both upper rows are busy.
+/// The upper row is found by walking up from `src.y - 2`, the first row
+/// above the arrow row: with the usual layer gap (auto stride >= 4) that
+/// row carries nothing but plain vertical legs, which the run crosses as
+/// clean `+` junctions. A row whose `[corner, rail]` stretch overlaps an
+/// occupied horizontal run in `occupied` — fork corridors, their label
+/// blocks, riding blocks (a tight three-row layer gap puts the
+/// layer-above's fork corridor exactly on the first candidate) — is
+/// skipped, because merging into it would chain the two edges into one
+/// line. A row that would pierce a rect in `blockers` ends the search:
+/// a higher run only burrows deeper into the layer above. `None` when no
+/// arrow needs dodging, the corner would collide with the source column,
+/// or every row up to the canvas top is busy or blocked.
 pub fn side_route_exit_jog(
     src: &Rect,
     rail_x: usize,
     exit_row: usize,
     sibling_arrow_cols: &[usize],
-    h_spans: &[(usize, usize, usize)],
+    occupied: &[(usize, usize, usize)],
+    blockers: &[Rect],
 ) -> Option<(usize, usize)> {
     if src.y < 2 || exit_row + 1 != src.y {
         return None;
@@ -85,13 +94,24 @@ pub fn side_route_exit_jog(
     let start = src.cx();
     let first =
         sibling_arrow_cols.iter().copied().filter(|&a| a > start + 1 && a < rail_x).min()?;
-    let jog = first - 2;
+    let jog = first - JOG_ARROW_CLEARANCE;
     if jog <= start {
         return None;
     }
-    let mut ups = [Some(src.y - 2), src.y.checked_sub(3)].into_iter().flatten();
-    ups.find(|&up| !h_spans.iter().any(|&(r, lo, hi)| r == up && hi >= jog && lo <= rail_x))
-        .map(|up| (jog, up))
+    let mut up = src.y - 2;
+    loop {
+        let run = Segment::H { x: jog, y: up, len: rail_x - jog };
+        if path_intersects_any(&[run], blockers) {
+            return None;
+        }
+        if !occupied.iter().any(|&(r, lo, hi)| r == up && hi >= jog && lo <= rail_x) {
+            return Some((jog, up));
+        }
+        if up == 0 {
+            return None;
+        }
+        up -= 1;
+    }
 }
 
 /// Segments of the right side route with explicit leg rows (see
@@ -214,4 +234,42 @@ pub fn forward_edge_side_routed(src: &Rect, tgt: &Rect, avoid: &[Rect], rail_x: 
     }
     let side = side_route_segments(src, tgt, rail_x);
     !path_intersects_any(&side, avoid)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exit_jog_walks_up_past_occupied_rows() {
+        // Source at y=10 (cx=14); the sibling arrow sits at column 20 on
+        // the exit row 9; the rail is at 30, so the corner lands at
+        // 20 - JOG_ARROW_CLEARANCE = 18. Rows 8 and 7 are occupied
+        // across the run's stretch — the jog must hop to row 6.
+        let src = Rect::new(10, 10, 9, 7);
+        let jog = side_route_exit_jog(&src, 30, 9, &[20], &[(8, 18, 30), (7, 18, 30)], &[]);
+        assert_eq!(jog, Some((18, 6)));
+    }
+
+    #[test]
+    fn exit_jog_stops_at_node_blocker() {
+        // Same geometry, but a node stands over rows 5-7 in the run's
+        // stretch: row 8 is occupied and row 7 would pierce the node —
+        // the search must give up rather than burrow into the layer
+        // above.
+        let src = Rect::new(10, 10, 9, 7);
+        let blocker = Rect::new(16, 5, 12, 3);
+        let jog = side_route_exit_jog(&src, 30, 9, &[20], &[(8, 18, 30)], &[blocker]);
+        assert_eq!(jog, None);
+    }
+
+    #[test]
+    fn exit_jog_declines_when_nothing_to_dodge() {
+        let src = Rect::new(10, 10, 9, 7);
+        // No sibling arrow east of the source column.
+        assert_eq!(side_route_exit_jog(&src, 30, 9, &[], &[], &[]), None);
+        // Arrow so close that the corner would collide with the source
+        // column (jog == start).
+        assert_eq!(side_route_exit_jog(&src, 30, 9, &[16], &[], &[]), None);
+    }
 }

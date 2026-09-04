@@ -26,6 +26,12 @@ use super::routing::{
 };
 use super::side_route::{SideRoutePlan, side_route_segments_at};
 
+/// Narrowest exit-leg stretch a near-source label may wrap into: below
+/// this the fragments read as garbage (the "wakeup" shattered into
+/// two-column pieces), so the label falls back to the wide rail-end
+/// margin instead.
+const MIN_EXIT_LABEL_COLS: usize = 8;
+
 /// Pick the arrowhead glyph that points inward along the source's
 /// dominant anchor direction.
 ///
@@ -310,7 +316,7 @@ impl Connector {
             let hard_east =
                 sibling_arrows.iter().copied().filter(|&a| a > x).min().unwrap_or(east).min(east);
             let avail = hard_east.saturating_sub(x + 2);
-            if avail < 8 {
+            if avail < MIN_EXIT_LABEL_COLS {
                 // Stretch too short for a sane wrap (natural-row exits
                 // start at the source's right edge, right next to the
                 // rail) — the rail-end placement wraps to the wide
