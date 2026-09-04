@@ -137,28 +137,32 @@ pub fn side_route_segments_at(
     if let Some((jog_col, up_row)) = jog {
         let start = src.cx();
         if jog_col > start {
-            segs.push(Segment::H { x: start, y: exit_row, len: jog_col - start });
+            // Spans include their corner columns (the inclusive
+            // convention of `build_three_segment`): a corner cell is
+            // covered by both its segments, which the crossing pass's
+            // arm validation relies on.
+            segs.push(Segment::H { x: start, y: exit_row, len: jog_col - start + 1 });
         }
         segs.push(Segment::V { x: jog_col, y: up_row, len: exit_row - up_row + 1 });
         if rail_x > jog_col {
-            segs.push(Segment::H { x: jog_col, y: up_row, len: rail_x - jog_col });
+            segs.push(Segment::H { x: jog_col, y: up_row, len: rail_x - jog_col + 1 });
         }
         let (lo, hi) = if up_row <= entry_row { (up_row, entry_row) } else { (entry_row, up_row) };
         segs.push(Segment::V { x: rail_x, y: lo, len: hi - lo + 1 });
         if rail_x > tgt_right {
-            segs.push(Segment::H { x: tgt_right, y: entry_row, len: rail_x - tgt_right });
+            segs.push(Segment::H { x: tgt_right, y: entry_row, len: rail_x - tgt_right + 1 });
         }
         return segs;
     }
     if rail_x > src_right {
         let start = if exit_row == src.cy() { src_right } else { src.cx() };
-        segs.push(Segment::H { x: start, y: exit_row, len: rail_x - start });
+        segs.push(Segment::H { x: start, y: exit_row, len: rail_x - start + 1 });
     }
     let (lo, hi) =
         if exit_row <= entry_row { (exit_row, entry_row) } else { (entry_row, exit_row) };
     segs.push(Segment::V { x: rail_x, y: lo, len: hi - lo + 1 });
     if rail_x > tgt_right {
-        segs.push(Segment::H { x: tgt_right, y: entry_row, len: rail_x - tgt_right });
+        segs.push(Segment::H { x: tgt_right, y: entry_row, len: rail_x - tgt_right + 1 });
     }
     segs
 }

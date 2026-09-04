@@ -113,6 +113,7 @@ impl<'a> SequenceDiagram<'a> {
 
         let rounded = BorderStyle::Rounded.glyphs(self.charset);
         let v_ch = rounded.vertical;
+        let h_ch = rounded.horizontal;
         let tee_up = rounded.tee_up;
 
         let n = self.participants.len();
@@ -241,6 +242,12 @@ impl<'a> SequenceDiagram<'a> {
                 // same level as the lifeline, so visual continuity is kept.
                 canvas.put_layered(from_x, arrow_y, v_ch, Layer::Connector, None);
                 canvas.put_layered(to_x, arrow_y, v_ch, Layer::Connector, None);
+                // The message departs the lifeline here: the Connector's
+                // horizontal span starts one cell outside the source rect,
+                // so the departure cell itself is on no horizontal span —
+                // write (and log) one dash so the arm validation keeps the
+                // tee's outward arm. Repair rebuilds the same `+`.
+                canvas.put_layered(from_x, arrow_y, h_ch, Layer::Connector, None);
 
                 // Label centered in its region — the free columns between
                 // the two lifelines — so it never covers a lifeline.
@@ -262,6 +269,7 @@ impl<'a> SequenceDiagram<'a> {
         // Repair connector junctions so corners and crossings use proper
         // Unicode box-drawing glyphs.
         canvas.repair_connector_junctions(LineStyle::Simple, self.charset);
+        canvas.apply_crossing_pass(LineStyle::Simple, self.charset);
 
         Ok(canvas.render(self.color))
     }
@@ -454,6 +462,26 @@ mod tests {
         assert!(out.contains("Client"));
         assert!(out.contains("Server"));
         assert!(out.contains("GET /api"));
+    }
+
+    #[test]
+    fn test_message_crossing_lifeline_renders_as_gap() {
+        // A message from the first to the third participant passes
+        // through the middle lifeline: the crossing must not read as a
+        // connection — the lifeline stays continuous and the message
+        // yields a blank cell on each side. The departure tee on the
+        // source lifeline keeps its `+`.
+        let sd = SequenceDiagram::new(100, Charset::Ascii)
+            .add_participant("A")
+            .add_participant("B")
+            .add_participant("C")
+            .add_message("A", "C", "skip");
+        let out = sd.build().unwrap();
+        let arrow_row = out.lines().position(|l| l.contains("-->")).expect("arrow row");
+        let row = out.lines().nth(arrow_row).unwrap();
+        assert!(row.contains(" | "), "crossing renders as a gap around the lifeline:\n{out}");
+        assert!(row.trim_start().starts_with('+'), "departure tee keeps its junction:\n{out}");
+        assert!(!row.contains("-->+"), "crossing must not render as a junction:\n{out}");
     }
 
     #[test]

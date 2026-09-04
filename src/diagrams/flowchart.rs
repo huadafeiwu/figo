@@ -893,6 +893,7 @@ impl Flowchart {
         // Phase 3 — repair connector junctions so corners and crossings
         // use proper Unicode box-drawing glyphs.
         canvas.repair_connector_junctions(LineStyle::Simple, self.charset);
+        canvas.apply_crossing_pass(LineStyle::Simple, self.charset);
 
         Ok(canvas.render(self.color))
     }
@@ -1904,6 +1905,10 @@ mod tests {
         // (two rows above the exit).
         let upper = out.lines().nth(yes_row - 2).expect("jog upper run row");
         assert!(upper.contains("---"), "jog upper run missing:\n{out}");
+        // The phantom `+` the raster repair used to weld onto the run
+        // (an unbacked south arm toward the corridor corner below) is
+        // gone: the run keeps only its two corners.
+        assert_eq!(upper.matches('+').count(), 2, "unbacked arm welded onto the jog run:\n{out}");
     }
 
     #[test]
@@ -2023,5 +2028,49 @@ mod tests {
             .connect("s", "t", Some("wakeup"));
         let out = fc.build().unwrap();
         assert_eq!(out.matches("wakeup").count(), 1, "label must render whole:\n{out}");
+    }
+
+    #[test]
+    fn test_crossing_between_edges_renders_as_gap() {
+        // f1's fork corridor passes through f2's south leg (the test②
+        // graph): the crossing must not read as a connection — the leg
+        // stays continuous and the corridor yields a blank cell on each
+        // side, instead of the junction `+` both used to render as. The
+        // corridor's own corners keep their `+`.
+        let mut fc = Flowchart::new(110, Charset::Ascii).add_node(FlowNode {
+            id: "s".into(),
+            label: "s".into(),
+            shape: NodeShape::Rounded,
+            position: None,
+        });
+        for id in ["f1", "f2"] {
+            fc = fc.add_node(FlowNode {
+                id: id.into(),
+                label: format!("{id}?"),
+                shape: NodeShape::Diamond,
+                position: None,
+            });
+        }
+        for id in ["x", "y", "h"] {
+            fc = fc.add_node(FlowNode {
+                id: id.into(),
+                label: id.into(),
+                shape: NodeShape::Rectangle,
+                position: None,
+            });
+        }
+        let fc = fc
+            .connect("s", "f1", None)
+            .connect("s", "f2", None)
+            .connect("f1", "x", None)
+            .connect("f2", "y", None)
+            .connect("f1", "h", Some("no"))
+            .connect("f2", "h", Some("no"));
+        let out = fc.build().unwrap();
+        let no_row = out.lines().position(|l| l.contains("no")).expect("no label");
+        let row = out.lines().nth(no_row).unwrap();
+        assert!(row.contains(" | "), "crossing renders as a gap around the leg:\n{out}");
+        assert!(!row.contains("no---+"), "crossing must not render as a junction:\n{out}");
+        assert!(row.contains('+'), "the corridor's own corners keep their +:\n{out}");
     }
 }

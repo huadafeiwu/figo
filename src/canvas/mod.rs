@@ -18,10 +18,12 @@
 //! node and points inward.
 
 mod cell;
+pub mod crossing;
 
 pub use cell::{Cell, Layer};
 
 use crate::error::Result;
+use crate::layout::routing::Segment;
 use crate::style::{Charset, Color, LineStyle};
 use unicode_width::UnicodeWidthChar;
 
@@ -31,6 +33,16 @@ pub struct Canvas {
     width: usize,
     height: usize,
     pub(crate) cells: Vec<Cell>,
+    /// Connector-line writes recorded by the put_* hooks, as segments:
+    /// full spans from the span methods, 1-length cells from single
+    /// put_layered line writes. Consumed by the crossing pass (see
+    /// [`crate::canvas::crossing`]).
+    pub(crate) line_log: Vec<Segment>,
+    /// Cells the junction repair pass converted into junction glyphs.
+    /// Only these are arm-validated by the crossing pass: pre-written
+    /// junction glyphs (self-loop corners, corridor junction marks) are
+    /// authoritative and must not be rewritten.
+    pub(crate) repair_touched: Vec<(usize, usize)>,
 }
 
 impl Canvas {
@@ -41,7 +53,7 @@ impl Canvas {
         let width = width.max(1);
         let height = height.max(1);
         let cells = vec![Cell::default(); width * height];
-        Self { width, height, cells }
+        Self { width, height, cells, line_log: Vec::new(), repair_touched: Vec::new() }
     }
 
     /// Canvas width in cells.
@@ -87,6 +99,20 @@ impl Canvas {
         };
         if should_write {
             self.cells[idx] = Cell::at_colored(ch, layer, fg);
+            if layer == Layer::Connector {
+                let vert = Self::connects_vertically(ch);
+                let horiz = Self::connects_horizontally(ch);
+                // Single-cell line writes (ladder rails, restored dashes):
+                // log pure-direction glyphs only. A junction glyph is not
+                // a line — logging it would back its own phantom arms in
+                // the crossing pass; its cell is covered by the real
+                // spans that meet there anyway.
+                if vert && !horiz {
+                    self.line_log.push(Segment::V { x, y, len: 1 });
+                } else if horiz && !vert {
+                    self.line_log.push(Segment::H { x, y, len: 1 });
+                }
+            }
         }
     }
 
@@ -136,6 +162,9 @@ impl Canvas {
 
     /// Vertical line drawing with explicit z-layer.
     pub fn put_vertical_layered(&mut self, x: usize, y: usize, len: usize, ch: char, layer: Layer) {
+        if layer == Layer::Connector && Self::connects_vertically(ch) {
+            self.line_log.push(Segment::V { x, y, len });
+        }
         for dy in 0..len {
             self.put_layered(x, y + dy, ch, layer, None);
         }
@@ -150,6 +179,9 @@ impl Canvas {
         ch: char,
         layer: Layer,
     ) {
+        if layer == Layer::Connector && Self::connects_horizontally(ch) {
+            self.line_log.push(Segment::H { x, y, len });
+        }
         for dx in 0..len {
             self.put_layered(x + dx, y, ch, layer, None);
         }
@@ -303,6 +335,7 @@ impl Canvas {
                 let dirs = self.connector_directions(x, y);
                 if dirs.count() >= 2 && (dirs.e || dirs.w) && (dirs.n || dirs.s) {
                     self.put_layered(x, y, '+', Layer::Connector, None);
+                    self.repair_touched.push((x, y));
                 }
             }
         }
@@ -347,6 +380,7 @@ impl Canvas {
                 let dirs = self.connector_directions(x, y);
                 if let Some(ch) = junction_char(dirs, style) {
                     self.put_layered(x, y, ch, Layer::Connector, None);
+                    self.repair_touched.push((x, y));
                 }
             }
         }

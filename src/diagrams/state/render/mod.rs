@@ -213,6 +213,7 @@ impl<'a> StateDiagram<'a> {
         }
 
         canvas.repair_connector_junctions(LineStyle::Simple, self.charset);
+        canvas.apply_crossing_pass(LineStyle::Simple, self.charset);
         Ok(canvas.render(self.color))
     }
 
